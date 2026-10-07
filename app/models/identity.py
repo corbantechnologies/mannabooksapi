@@ -1,0 +1,68 @@
+import uuid
+from datetime import datetime
+from typing import Optional
+from sqlalchemy import (
+    String,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Text,
+    Integer,
+    JSON,
+)
+from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.db.base import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    email: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    is_super_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    plan: Mapped[str] = mapped_column(String(30), default="FREE", nullable=False)
+    subscription_status: Mapped[str] = mapped_column(String(30), default="ACTIVE", nullable=False)
+    subscription_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Session(Base):
+    __tablename__ = "sessions"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    user: Mapped["User"] = relationship("User")
+
+
+class Shop(Base):
+    __tablename__ = "shops"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    code: Mapped[Optional[str]] = mapped_column(String(10), unique=True, nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), default="KES", nullable=False)
+    tax_pin: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    is_vat_registered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    vat_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    fiscal_year_start_month: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    is_gl_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class ShopMember(Base):
+    __tablename__ = "shop_members"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    role: Mapped[str] = mapped_column(String(30), default="OPERATOR", nullable=False)
+    custom_permissions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    assigned_location_ids: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    hide_cost_prices: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
