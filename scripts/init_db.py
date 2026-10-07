@@ -4,6 +4,11 @@ from app.db.base import Base
 # Import all model modules so they register on Base.metadata
 from app.models.identity import User, Session, Shop, ShopMember
 from app.models.etims import EtimsConfig, EtimsSequence, EtimsTransmission
+from app.models.client import Client
+from app.models.supplier import Supplier
+from app.models.item import Product
+from app.models.inventory import StockLocation, StockLedger
+from app.models.account import ChartOfAccount, FiscalYear
 
 
 async def init_models():
