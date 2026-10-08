@@ -10,6 +10,7 @@ from app.models.item import Product
 from app.models.inventory import StockLocation, StockLedger
 from app.models.account import ChartOfAccount, FiscalYear
 from app.models.document import Document, DocumentItem
+from app.models.payment import DocumentPayment
 
 
 async def init_models():

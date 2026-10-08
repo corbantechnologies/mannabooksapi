@@ -9,6 +9,7 @@ from app.modules.suppliers.router import router as suppliers_router
 from app.modules.items.router import router as items_router
 from app.modules.accounts.router import router as accounts_router
 from app.modules.documents.router import router as documents_router
+from app.modules.payments.router import router as payments_router
 
 settings = get_settings()
 
@@ -37,6 +38,7 @@ app.include_router(suppliers_router, prefix="/v1")
 app.include_router(items_router, prefix="/v1")
 app.include_router(accounts_router, prefix="/v1")
 app.include_router(documents_router, prefix="/v1")
+app.include_router(payments_router, prefix="/v1")
 
 
 @app.get("/health")
