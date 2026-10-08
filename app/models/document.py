@@ -55,6 +55,8 @@ class Document(Base):
 
     # Relationships
     items: Mapped[List["DocumentItem"]] = relationship("DocumentItem", back_populates="document", cascade="all, delete-orphan", lazy="selectin")
+    client = relationship("Client", lazy="selectin")
+    supplier = relationship("Supplier", lazy="selectin")
 
     __table_args__ = (
         UniqueConstraint("shop_id", "doc_number", "type", name="unique_shop_doc_number"),
@@ -76,3 +78,4 @@ class DocumentItem(Base):
     item_total: Mapped[Decimal] = mapped_column("item_total", Numeric(12, 2), nullable=False)
 
     document: Mapped["Document"] = relationship("Document", back_populates="items")
+    product = relationship("Product", lazy="selectin")

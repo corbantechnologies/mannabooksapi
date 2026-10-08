@@ -11,6 +11,8 @@ from app.models.inventory import StockLocation, StockLedger
 from app.models.account import ChartOfAccount, FiscalYear
 from app.models.document import Document, DocumentItem
 from app.models.payment import DocumentPayment
+from app.models.expense import Expense, Income
+from app.models.journal import JournalEntry
 
 
 async def init_models():

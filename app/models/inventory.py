@@ -4,7 +4,7 @@ from typing import Optional
 from decimal import Decimal
 from sqlalchemy import String, Boolean, DateTime, ForeignKey, Numeric, Text
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 
@@ -38,3 +38,7 @@ class StockLedger(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_by_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    product = relationship("Product", lazy="selectin")
+    location = relationship("StockLocation", lazy="selectin")
+
