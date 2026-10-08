@@ -50,6 +50,11 @@ class Document(Base):
     issue_date: Mapped[datetime] = mapped_column("issue_date", DateTime, default=datetime.utcnow, nullable=False)
     due_date: Mapped[Optional[datetime]] = mapped_column("due_date", DateTime, nullable=True)
 
+    # Recurring Invoicing
+    is_recurring: Mapped[bool] = mapped_column("is_recurring", Boolean, default=False, nullable=False)
+    recurring_interval: Mapped[Optional[str]] = mapped_column("recurring_interval", String(20), nullable=True)
+    next_recurring_date: Mapped[Optional[datetime]] = mapped_column("next_recurring_date", DateTime, nullable=True)
+
     location_id: Mapped[Optional[uuid.UUID]] = mapped_column("location_id", UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
 

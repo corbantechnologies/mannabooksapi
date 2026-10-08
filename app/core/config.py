@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     # Internal API Secret between Next.js BFF and FastAPI (Strictly from environment)
     INTERNAL_API_KEY: str
+    CRON_SECRET: str = "manna_books_cron_secret_prod"
 
     # Session & Cookie
     COOKIE_NAME: str = "kenya-nzuri-kabisa"
