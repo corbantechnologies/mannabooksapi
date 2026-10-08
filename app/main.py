@@ -1,6 +1,8 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
+from scripts.init_db import init_models
 from app.modules.etims.router import router as etims_router
 from app.modules.auth.router import router as auth_router
 from app.modules.workspaces.router import router as workspaces_router
@@ -15,9 +17,21 @@ from app.modules.crons.router import router as crons_router
 
 settings = get_settings()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Automatically verify and create tables if not exists on startup
+    try:
+        await init_models()
+    except Exception as e:
+        print(f"[Startup Warning] Could not auto-initialize DB tables: {e}")
+    yield
+
+
 app = FastAPI(
     title="MannaBooks Decoupled API & KRA eTIMS Engine",
     version="1.0.0",
+    lifespan=lifespan,
     docs_url="/docs" if not settings.is_production else None,
     redoc_url=None,
 )
