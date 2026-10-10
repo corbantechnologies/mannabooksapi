@@ -1,11 +1,18 @@
+# app/api/deps.py
 from typing import Optional
 from fastapi import Header, HTTPException, status, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.session import get_db
 from app.core.config import get_settings
+from app.models.identity import User
 
 settings = get_settings()
 
+
+# ============================================================
+# Existing internal / cron dependencies (keep as-is)
+# ============================================================
 
 async def verify_internal_api_key(
     x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
@@ -45,7 +52,11 @@ async def verify_cron_or_internal_key(
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """Enforce fail-closed security: CRON_SECRET via Bearer token OR X-Internal-Key."""
-    bearer_token = authorization.replace("Bearer ", "").strip() if authorization and authorization.startswith("Bearer ") else None
+    bearer_token = (
+        authorization.replace("Bearer ", "").strip()
+        if authorization and authorization.startswith("Bearer ")
+        else None
+    )
 
     is_valid_internal = x_internal_key and x_internal_key == settings.INTERNAL_API_KEY
     is_valid_cron = bearer_token and bearer_token == settings.CRON_SECRET
@@ -55,3 +66,37 @@ async def verify_cron_or_internal_key(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized cron trigger: Invalid CRON_SECRET or Internal API key.",
         )
+
+
+# ============================================================
+# NEW: Reusable authenticated user dependency
+# ============================================================
+
+async def get_current_user(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """
+    Extract and validate the Bearer token.
+    Always returns a real User or raises 401 (never 422).
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized - Missing or invalid Authorization header",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = authorization.split()[1]
+
+    from app.modules.auth.service import verify_and_get_session
+    user = await verify_and_get_session(db, token)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized - Invalid or expired session",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return user
