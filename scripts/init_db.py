@@ -90,7 +90,34 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE products ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL;",
 
     # 5. CLIENTS & SUPPLIERS TABLE
-    "ALTER TABLE clients ADD COLUMN IF NOT EXISTS client_type VARCHAR(30) DEFAULT 'WALK_IN' NOT NULL;",
+    """
+    DO $$ BEGIN
+        CREATE TYPE client_type AS ENUM ('WALK_IN', 'INDIVIDUAL', 'CORPORATE');
+    EXCEPTION
+        WHEN duplicate_object THEN null;
+    END $$;
+    """,
+    # Convert the existing VARCHAR column to the new ENUM type
+    """
+    DO $$ BEGIN
+        -- Drop default temporarily so we can change the type
+        ALTER TABLE clients ALTER COLUMN client_type DROP DEFAULT;
+        
+        -- Convert column from VARCHAR to the ENUM
+        ALTER TABLE clients 
+            ALTER COLUMN client_type TYPE client_type 
+            USING client_type::client_type;
+        
+        -- Restore the default
+        ALTER TABLE clients 
+            ALTER COLUMN client_type SET DEFAULT 'WALK_IN'::client_type;
+    EXCEPTION
+        WHEN undefined_column THEN
+            -- Column doesn't exist yet → create it properly as ENUM
+            ALTER TABLE clients ADD COLUMN client_type client_type DEFAULT 'WALK_IN'::client_type NOT NULL;
+        WHEN others THEN null;  -- already converted or other safe cases
+    END $$;
+    """,
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS tax_pin VARCHAR(30);",
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS requires_etims BOOLEAN DEFAULT FALSE NOT NULL;",
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS phone VARCHAR(20);",
