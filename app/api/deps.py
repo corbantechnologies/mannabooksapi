@@ -2,16 +2,18 @@
 from typing import Optional
 from fastapi import Header, HTTPException, status, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.db.session import get_db
 from app.core.config import get_settings
+from app.core.security import verify_access_token
 from app.models.identity import User
 
 settings = get_settings()
 
 
 # ============================================================
-# Existing internal / cron dependencies (keep as-is)
+# Internal / cron dependencies (kept for BFF & crons)
 # ============================================================
 
 async def verify_internal_api_key(
@@ -19,8 +21,7 @@ async def verify_internal_api_key(
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ensure internal communication originates from Next.js BFF or an authenticated user session."""
-    # 1. If explicit internal key provided, validate it strictly
+    """Ensure internal communication originates from Next.js BFF or an authenticated user."""
     if x_internal_key is not None:
         if x_internal_key == settings.INTERNAL_API_KEY:
             return True
@@ -29,15 +30,17 @@ async def verify_internal_api_key(
             detail="Invalid internal authorization secret.",
         )
 
-    # 2. Valid user session bearer token
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization.split()[1]
+        # Try JWT first, fall back to old session for migration safety
+        user_id = verify_access_token(token)
+        if user_id:
+            return True
         from app.modules.auth.service import verify_and_get_session
         user = await verify_and_get_session(db, token)
         if user:
             return True
 
-    # 3. Development fallback if key not passed at all
     if not settings.is_production:
         return True
 
@@ -69,7 +72,7 @@ async def verify_cron_or_internal_key(
 
 
 # ============================================================
-# NEW: Reusable authenticated user dependency
+# JWT-based current user
 # ============================================================
 
 async def get_current_user(
@@ -77,8 +80,8 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """
-    Extract and validate the Bearer token.
-    Always returns a real User or raises 401 (never 422).
+    Extract Bearer JWT, verify it, and return the User.
+    Always raises 401 (never 422).
     """
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(
@@ -88,14 +91,22 @@ async def get_current_user(
         )
 
     token = authorization.split()[1]
+    user_id = verify_access_token(token)
 
-    from app.modules.auth.service import verify_and_get_session
-    user = await verify_and_get_session(db, token)
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized - Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
 
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized - Invalid or expired session",
+            detail="Unauthorized - User not found",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

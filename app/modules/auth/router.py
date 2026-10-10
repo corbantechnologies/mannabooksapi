@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db
-from app.api.deps import verify_internal_api_key
+from app.api.deps import get_current_user
 from app.models.identity import User
 from app.modules.auth.schemas import (
     LoginRequest,
@@ -12,11 +12,12 @@ from app.modules.auth.schemas import (
 )
 from app.modules.auth.service import (
     verify_password,
-    create_session,
-    verify_and_get_session,
+    issue_jwt_for_user,
     invalidate_session,
     register_owner_account,
+    hash_password,
 )
+from app.core.security import verify_access_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -26,7 +27,6 @@ async def register_endpoint(
     req: RegisterOwnerRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Registers new merchant account, provisions shop workspace, and returns session token."""
     return await register_owner_account(db, req)
 
 
@@ -35,7 +35,6 @@ async def login_endpoint(
     req: LoginRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Authenticate email & password, producing session token."""
     q = select(User).where(User.email == req.email.lower().strip())
     res = await db.execute(q)
     user = res.scalar_one_or_none()
@@ -43,7 +42,7 @@ async def login_endpoint(
     if not user or not verify_password(req.password, user.password_hash):
         return SessionResponse(success=False, error="Invalid email address or password.")
 
-    token, _ = await create_session(db, user.id)
+    token = issue_jwt_for_user(user.id)
 
     return SessionResponse(
         success=True,
@@ -64,7 +63,6 @@ async def token_endpoint(
     req: LoginRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """OAuth2 / token endpoint returning access_token and user profile."""
     q = select(User).where(User.email == req.email.lower().strip())
     res = await db.execute(q)
     user = res.scalar_one_or_none()
@@ -72,61 +70,53 @@ async def token_endpoint(
     if not user or not verify_password(req.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid email address or password."
+            detail="Invalid email address or password.",
         )
 
-    token, _ = await create_session(db, user.id)
+    token = issue_jwt_for_user(user.id)
     return {
         "access_token": token,
         "token_type": "bearer",
         "user": {
-            "id": user.id,
+            "id": str(user.id),
             "name": user.name,
             "email": user.email,
             "is_super_admin": user.is_super_admin,
             "plan": user.plan,
             "subscription_status": user.subscription_status,
-        }
+        },
     }
 
 
 @router.get("/me")
 async def get_current_user_endpoint(
-    authorization: str = Header(..., description="Bearer <session_token>"),
-    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Validate active session token and return user profile."""
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
-
-    token = parts[1]
-    user = await verify_and_get_session(db, token)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
-
     return {
         "success": True,
         "user": {
-            "id": str(user.id),
-            "name": user.name,
-            "email": user.email,
-            "isSuperAdmin": user.is_super_admin,
-            "plan": user.plan,
-            "subscriptionStatus": user.subscription_status,
+            "id": str(current_user.id),
+            "name": current_user.name,
+            "email": current_user.email,
+            "isSuperAdmin": current_user.is_super_admin,
+            "plan": current_user.plan,
+            "subscriptionStatus": current_user.subscription_status,
         },
     }
 
 
 @router.post("/logout")
 async def logout_endpoint(
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    authorization: str = Header(None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Invalidate session in database."""
-    parts = authorization.split()
-    if len(parts) == 2 and parts[0].lower() == "bearer":
-        await invalidate_session(db, parts[1])
+    # JWT is stateless – just return success.
+    # If an old session token is still sent, invalidate it.
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split()[1]
+        # Only try to invalidate if it looks like an old session token
+        if len(token) == 64:  # old hex session tokens are 64 chars
+            await invalidate_session(db, token)
     return {"success": True}
 
 
@@ -147,7 +137,6 @@ async def forgot_password_endpoint(
     req: ForgotPasswordRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate secure password reset token and return details for notification."""
     import secrets
     from datetime import datetime, timedelta
     from app.models.identity import PasswordResetToken
@@ -161,8 +150,7 @@ async def forgot_password_endpoint(
     if not user:
         return {"success": True}
 
-    del_stmt = delete(PasswordResetToken).where(PasswordResetToken.user_id == user.id)
-    await db.execute(del_stmt)
+    await db.execute(delete(PasswordResetToken).where(PasswordResetToken.user_id == user.id))
 
     raw_token = secrets.token_hex(32)
     expires_at = datetime.utcnow() + timedelta(hours=1)
@@ -188,18 +176,13 @@ async def reset_password_endpoint(
     req: ResetPasswordRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Validate reset token and update user password."""
     from datetime import datetime
     from app.models.identity import PasswordResetToken
-    from app.modules.auth.service import hash_password
 
     now = datetime.utcnow()
-    q = (
-        select(PasswordResetToken)
-        .where(
-            PasswordResetToken.token == req.token,
-            PasswordResetToken.expires_at > now,
-        )
+    q = select(PasswordResetToken).where(
+        PasswordResetToken.token == req.token,
+        PasswordResetToken.expires_at > now,
     )
     res = await db.execute(q)
     token_match = res.scalar_one_or_none()
@@ -207,7 +190,7 @@ async def reset_password_endpoint(
     if not token_match:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="The reset link is invalid or has expired. Please request a new one."
+            detail="The reset link is invalid or has expired. Please request a new one.",
         )
 
     q_user = select(User).where(User.id == token_match.user_id)
@@ -220,4 +203,3 @@ async def reset_password_endpoint(
     await db.commit()
 
     return {"success": True}
-

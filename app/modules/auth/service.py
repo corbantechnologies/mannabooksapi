@@ -7,6 +7,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 from app.models.identity import User, Session, Shop, ShopMember
 from app.core.config import get_settings
+from app.core.security import create_access_token
 
 settings = get_settings()
 
@@ -22,8 +23,10 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
 
 
+# ---------- Old session helpers (kept for migration / logout) ----------
+
 async def create_session(db: AsyncSession, user_id) -> Tuple[str, datetime]:
-    """Generates 64-hex token and persists session row into PostgreSQL."""
+    """Legacy session (still used by some internal paths). Prefer JWT."""
     token = secrets.token_hex(32)
     expires_at = datetime.utcnow() + timedelta(days=settings.COOKIE_DURATION_DAYS)
 
@@ -38,7 +41,7 @@ async def create_session(db: AsyncSession, user_id) -> Tuple[str, datetime]:
 
 
 async def verify_and_get_session(db: AsyncSession, token: str) -> Optional[User]:
-    """Validates session token from cookie/bearer against database, clearing stale sessions."""
+    """Legacy session validation."""
     if not token:
         return None
 
@@ -68,6 +71,15 @@ async def invalidate_session(db: AsyncSession, token: str) -> None:
         await db.commit()
 
 
+# ---------- New JWT helpers ----------
+
+def issue_jwt_for_user(user_id) -> str:
+    """Create a JWT for the given user id."""
+    return create_access_token(subject=str(user_id))
+
+
+# ---------- Registration ----------
+
 import re
 import string
 import random
@@ -75,7 +87,6 @@ from app.modules.auth.schemas import RegisterOwnerRequest, SessionResponse, User
 
 
 async def generate_unique_shop_code(db: AsyncSession) -> str:
-    """Generates a unique 5-character uppercase alphanumeric code for a shop."""
     chars = string.ascii_uppercase + string.digits
     for _ in range(50):
         code = "".join(random.choices(chars, k=5))
@@ -87,19 +98,14 @@ async def generate_unique_shop_code(db: AsyncSession) -> str:
 
 
 async def register_owner_account(db: AsyncSession, req: RegisterOwnerRequest) -> SessionResponse:
-    """Creates user, shop workspace, owner membership and returns new session."""
-    # 1. Enforce unique emails
     clean_email = req.email.lower().strip()
     q = select(User).where(User.email == clean_email)
     res = await db.execute(q)
-    existing_user = res.scalar_one_or_none()
-    if existing_user:
+    if res.scalar_one_or_none():
         return SessionResponse(success=False, error="An account with this email already exists.")
 
-    # 2. Hash password with bcrypt
     hashed_pass = hash_password(req.password)
 
-    # 3. Create User
     new_user = User(
         name=req.name.strip(),
         email=clean_email,
@@ -111,21 +117,13 @@ async def register_owner_account(db: AsyncSession, req: RegisterOwnerRequest) ->
     db.add(new_user)
     await db.flush()
 
-    # 4. Generate clean unique URL slug
-    base_slug = re.sub(r"[^a-z0-9]+", "-", req.business_name.lower().strip()).strip("-")
-    if not base_slug:
-        base_slug = "shop"
-
+    base_slug = re.sub(r"[^a-z0-9]+", "-", req.business_name.lower().strip()).strip("-") or "shop"
     q_slug = select(Shop).where(Shop.slug == base_slug)
     res_slug = await db.execute(q_slug)
-    if res_slug.scalar_one_or_none():
-        final_slug = f"{base_slug}-{secrets.token_hex(2)}"
-    else:
-        final_slug = base_slug
+    final_slug = f"{base_slug}-{secrets.token_hex(2)}" if res_slug.scalar_one_or_none() else base_slug
 
     shop_code = await generate_unique_shop_code(db)
 
-    # 5. Create Shop workspace
     new_shop = Shop(
         owner_id=new_user.id,
         name=req.business_name.strip(),
@@ -141,7 +139,6 @@ async def register_owner_account(db: AsyncSession, req: RegisterOwnerRequest) ->
     db.add(new_shop)
     await db.flush()
 
-    # 6. Create ShopMember (role: OWNER)
     new_member = ShopMember(
         shop_id=new_shop.id,
         user_id=new_user.id,
@@ -149,13 +146,10 @@ async def register_owner_account(db: AsyncSession, req: RegisterOwnerRequest) ->
         is_active=True,
     )
     db.add(new_member)
-    await db.flush()
-
-    # 7. Commit database writes
     await db.commit()
 
-    # 8. Issue active session token
-    token, _ = await create_session(db, new_user.id)
+    # Issue JWT instead of old session
+    token = issue_jwt_for_user(new_user.id)
 
     return SessionResponse(
         success=True,

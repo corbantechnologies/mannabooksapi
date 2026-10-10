@@ -8,28 +8,35 @@ class Settings(BaseSettings):
     PORT: int = 8000
     LOG_LEVEL: str = "INFO"
 
-    # PostgreSQL Connection (Strictly from environment)
+    # PostgreSQL Connection (required)
     DATABASE_URL: str
 
-    # Internal API Secret between Next.js BFF and FastAPI (Strictly from environment)
+    # Internal API Secret between Next.js BFF and FastAPI (required)
     INTERNAL_API_KEY: str
-    CRON_SECRET: str = "manna_books_cron_secret_prod"
+
+    # Cron secret (required)
+    CRON_SECRET: str
 
     # Session & Cookie
     COOKIE_NAME: str = "kenya-nzuri-kabisa"
     COOKIE_DURATION_DAYS: int = 30
 
+    # JWT Settings (required)
+    JWT_SECRET: str
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+
     # Business Timezone
     TZ: str = "Africa/Nairobi"
 
-    # KRA eTIMS Gateway & Global System Kill-Switch
-    ENABLE_KRA_ETIMS_GLOBAL: bool = False  # Master on/off switch for the entire platform
-    KRA_ETIMS_MOCK_MODE: bool = False  # Allows mock simulation during local testing/staging
+    # KRA eTIMS
+    ENABLE_KRA_ETIMS_GLOBAL: bool = False
+    KRA_ETIMS_MOCK_MODE: bool = False
     KRA_ETIMS_ENV: Literal["SANDBOX", "PRODUCTION"] = "SANDBOX"
     KRA_ETIMS_BASE_URL: str = "https://timsvscu.kra.go.ke/etims-api"
-    KRA_ETIMS_AES_ENCRYPTION_KEY: str  # 32 bytes master key strictly from environment
+    KRA_ETIMS_AES_ENCRYPTION_KEY: str  # required
 
-    # API Docs Basic Auth credentials (comma-separated username:password pairs)
+    # API Docs Basic Auth credentials
     DOCS_USERS: str = "admin:mannabooks2026,team:stagingpass2026"
 
     model_config = SettingsConfigDict(
