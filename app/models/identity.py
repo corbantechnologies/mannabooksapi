@@ -70,4 +70,28 @@ class ShopMember(Base):
     custom_permissions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     assigned_location_ids: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     hide_cost_prices: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    direct_approval_limit: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user: Mapped["User"] = relationship("User", lazy="selectin")
+    shop: Mapped["Shop"] = relationship("Shop", lazy="selectin")
+
+
+class ShopInvitation(Base):
+    __tablename__ = "shop_invitations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    email: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(String(30), default="EMPLOYEE", nullable=False)
+    custom_permissions: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    assigned_location_ids: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    hide_cost_prices: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    direct_approval_limit: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
+    token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="PENDING", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    shop: Mapped["Shop"] = relationship("Shop", lazy="selectin")

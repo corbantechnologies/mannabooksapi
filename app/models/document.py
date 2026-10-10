@@ -84,3 +84,13 @@ class DocumentItem(Base):
 
     document: Mapped["Document"] = relationship("Document", back_populates="items")
     product = relationship("Product", lazy="selectin")
+
+
+class DocumentToken(Base):
+    __tablename__ = "document_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    token: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+

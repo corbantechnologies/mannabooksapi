@@ -14,6 +14,10 @@ from app.modules.documents.router import router as documents_router
 from app.modules.payments.router import router as payments_router
 from app.modules.reports.router import router as reports_router
 from app.modules.crons.router import router as crons_router
+from app.modules.hr.router import router as hr_router
+from app.modules.crm.router import router as crm_router
+from app.modules.operations.router import router as operations_router
+from app.modules.governance.router import router as governance_router
 
 settings = get_settings()
 
@@ -91,6 +95,10 @@ app.include_router(documents_router, prefix="/v1")
 app.include_router(payments_router, prefix="/v1")
 app.include_router(reports_router, prefix="/v1")
 app.include_router(crons_router, prefix="/v1")
+app.include_router(hr_router, prefix="/v1")
+app.include_router(crm_router, prefix="/v1")
+app.include_router(operations_router, prefix="/v1")
+app.include_router(governance_router, prefix="/v1")
 
 
 @app.get("/")

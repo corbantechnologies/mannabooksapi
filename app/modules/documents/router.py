@@ -78,3 +78,119 @@ async def update_status_endpoint(
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     return doc
+
+
+@router.get("/public/{token}")
+async def get_public_document_endpoint(
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    from app.models.document import Document, DocumentToken
+    from app.models.identity import Shop
+    from app.models.payment import PaymentMethod
+
+    target_doc_id = None
+
+    q_tok = select(DocumentToken).where(DocumentToken.token == token)
+    tok_res = (await db.execute(q_tok)).scalar_one_or_none()
+    if tok_res:
+        target_doc_id = tok_res.document_id
+
+    if not target_doc_id:
+        try:
+            parsed_uuid = uuid.UUID(token)
+            q_doc = select(Document).where(Document.id == parsed_uuid)
+            doc_direct = (await db.execute(q_doc)).scalar_one_or_none()
+            if doc_direct:
+                target_doc_id = doc_direct.id
+        except (ValueError, TypeError):
+            pass
+
+    if not target_doc_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    q_full = (
+        select(Document)
+        .where(Document.id == target_doc_id)
+        .options(
+            selectinload(Document.items),
+            selectinload(Document.client),
+            selectinload(Document.supplier),
+        )
+    )
+    doc = (await db.execute(q_full)).scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    q_shop = select(Shop).where(Shop.id == doc.shop_id)
+    shop = (await db.execute(q_shop)).scalar_one_or_none()
+
+    q_pm = select(PaymentMethod).where(PaymentMethod.shop_id == doc.shop_id)
+    pms = (await db.execute(q_pm)).scalars().all()
+
+    return {
+        "success": True,
+        "document": {
+            "id": str(doc.id),
+            "docNumber": doc.doc_number,
+            "type": doc.type,
+            "status": doc.status,
+            "currency": doc.currency or "KES",
+            "grandTotal": str(doc.grand_total or "0.00"),
+            "subTotal": str(doc.sub_total or "0.00"),
+            "taxAmount": str(doc.tax_amount or "0.00"),
+            "notes": doc.notes,
+            "termsAndConditions": doc.terms_and_conditions,
+            "issueDate": doc.issue_date.isoformat() if doc.issue_date else None,
+            "dueDate": doc.due_date.isoformat() if doc.due_date else None,
+            "kraCuInvoiceNumber": doc.kra_cu_invoice_number,
+            "requiresEtims": doc.requires_etims,
+            "parentDocumentId": str(doc.parent_document_id) if doc.parent_document_id else None,
+            "client": {
+                "id": str(doc.client.id),
+                "name": doc.client.name,
+                "email": doc.client.email,
+                "phone": getattr(doc.client, "phone", None),
+                "taxPin": getattr(doc.client, "tax_pin", None),
+            } if doc.client else None,
+            "supplier": {
+                "id": str(doc.supplier.id),
+                "name": doc.supplier.name,
+            } if doc.supplier else None,
+            "items": [
+                {
+                    "id": str(item.id),
+                    "description": item.description,
+                    "notes": item.notes,
+                    "quantity": str(item.quantity),
+                    "unitPrice": str(item.unit_price),
+                    "taxType": item.tax_type,
+                    "taxAmount": str(item.tax_amount),
+                    "itemTotal": str(item.item_total),
+                }
+                for item in (doc.items or [])
+            ],
+        },
+        "shop": {
+            "id": str(shop.id) if shop else str(doc.shop_id),
+            "name": shop.name if shop else "Merchant",
+            "slug": shop.slug if shop else "",
+            "currency": shop.currency if shop else "KES",
+            "taxPin": getattr(shop, "tax_pin", None) if shop else None,
+            "primaryColor": getattr(shop, "primary_color", "#064e3b") if shop else "#064e3b",
+        },
+        "paymentMethods": [
+            {
+                "id": str(pm.id),
+                "type": getattr(pm, "type", "MPESA"),
+                "name": getattr(pm, "name", "M-Pesa"),
+                "accountNumber": getattr(pm, "account_number", None),
+                "paybillNumber": getattr(pm, "paybill_number", None),
+            }
+            for pm in pms
+        ]
+    }
+
