@@ -1,10 +1,16 @@
+import uuid
+from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, desc, text
+from sqlalchemy.orm import selectinload
 from app.db.session import get_db
+from app.core.config import get_settings
 from app.api.deps import verify_internal_api_key
-from app.models.identity import Shop, ShopMember
+from app.models.identity import Shop, ShopMember, ShopInvitation, User
 from app.modules.auth.service import verify_and_get_session
+
+settings = get_settings()
 
 router = APIRouter(prefix="/workspaces", tags=["Workspaces"])
 
@@ -656,22 +662,31 @@ async def update_workspace_settings_endpoint(
 @router.get("/{shop_id}/members")
 async def get_workspace_members_endpoint(
     shop_id: str,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    authorization: Optional[str] = Header(None, description="Bearer <session_token>"),
+    x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
     db: AsyncSession = Depends(get_db),
 ):
     """List members and pending invitations for a workspace."""
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
+    is_internal = x_internal_key and x_internal_key == settings.INTERNAL_API_KEY
+    if not is_internal and not settings.is_development:
+        if not authorization:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header or internal key required")
+        parts = authorization.split()
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
+        user = await verify_and_get_session(db, parts[1])
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
 
-    user = await verify_and_get_session(db, parts[1])
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
+    try:
+        s_uuid = uuid.UUID(str(shop_id))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid shop ID format")
 
     q_members = (
         select(ShopMember, User)
         .join(User, ShopMember.user_id == User.id)
-        .where(ShopMember.shop_id == shop_id, ShopMember.is_active == True)
+        .where(ShopMember.shop_id == s_uuid, ShopMember.is_active == True)
     )
     res_members = await db.execute(q_members)
     members_data = []
@@ -687,9 +702,14 @@ async def get_workspace_members_endpoint(
             "directApprovalLimit": float(member.direct_approval_limit),
             "isActive": member.is_active,
             "createdAt": member.created_at.isoformat() if member.created_at else None,
+            "user": {
+                "id": str(u.id),
+                "name": u.name,
+                "email": u.email,
+            },
         })
 
-    q_invites = select(ShopInvitation).where(ShopInvitation.shop_id == shop_id, ShopInvitation.status == "PENDING")
+    q_invites = select(ShopInvitation).where(ShopInvitation.shop_id == s_uuid, text("shop_invitations.status::text = 'PENDING'"))
     res_invites = await db.execute(q_invites)
     invites_data = []
     for inv in res_invites.scalars().all():
@@ -698,10 +718,49 @@ async def get_workspace_members_endpoint(
             "email": inv.email,
             "role": inv.role,
             "status": inv.status,
-            "expiresAt": inv.expires_at.isoformat(),
+            "expiresAt": inv.expires_at.isoformat() if inv.expires_at else None,
         })
 
     return {"success": True, "members": members_data, "invitations": invites_data}
+
+
+@router.get("/{shop_id}/invitations")
+async def get_workspace_invitations_endpoint(
+    shop_id: str,
+    authorization: Optional[str] = Header(None, description="Bearer <session_token>"),
+    x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
+    db: AsyncSession = Depends(get_db),
+):
+    """List pending invitations for a workspace."""
+    is_internal = x_internal_key and x_internal_key == settings.INTERNAL_API_KEY
+    if not is_internal and not settings.is_development:
+        if not authorization:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header or internal key required")
+        parts = authorization.split()
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
+        user = await verify_and_get_session(db, parts[1])
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
+
+    try:
+        s_uuid = uuid.UUID(str(shop_id))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid shop ID format")
+
+    q_invites = select(ShopInvitation).where(ShopInvitation.shop_id == s_uuid, text("shop_invitations.status::text = 'PENDING'"))
+    res_invites = await db.execute(q_invites)
+    invites_data = []
+    for inv in res_invites.scalars().all():
+        invites_data.append({
+            "id": str(inv.id),
+            "email": inv.email,
+            "role": inv.role,
+            "status": inv.status,
+            "expiresAt": inv.expires_at.isoformat() if inv.expires_at else None,
+        })
+
+    return invites_data
 
 
 @router.post("/{shop_id}/invitations")
@@ -1382,50 +1441,4 @@ async def get_shop_billing_overview(
         "availablePlans": available_plans,
         "transactions": transactions,
     }
-
-
-@router.get("/{shop_id}/members")
-async def list_shop_members(shop_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    q = select(ShopMember).options(selectinload(ShopMember.user)).where(ShopMember.shop_id == shop_id).order_by(desc(ShopMember.created_at))
-    members = (await db.execute(q)).scalars().all()
-    return [
-        {
-            "id": str(m.id),
-            "shopId": str(m.shop_id),
-            "userId": str(m.user_id),
-            "role": m.role,
-            "customPermissions": m.custom_permissions or "{}",
-            "assignedLocationIds": m.assigned_location_ids or [],
-            "hideCostPrices": m.hide_cost_prices,
-            "directApprovalLimit": str(m.direct_approval_limit),
-            "isActive": m.is_active,
-            "createdAt": m.created_at.isoformat() if m.created_at else None,
-            "user": {
-                "id": str(m.user.id),
-                "name": m.user.name,
-                "email": m.user.email,
-            } if m.user else None,
-        }
-        for m in members
-    ]
-
-
-@router.get("/{shop_id}/invitations")
-async def list_shop_invitations(shop_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    from app.models.identity import ShopInvitation
-    q = select(ShopInvitation).where(ShopInvitation.shop_id == shop_id).order_by(desc(ShopInvitation.created_at))
-    invites = (await db.execute(q)).scalars().all()
-    return [
-        {
-            "id": str(inv.id),
-            "shopId": str(inv.shop_id),
-            "email": inv.email,
-            "role": inv.role,
-            "status": inv.status,
-            "token": inv.token,
-            "createdAt": inv.created_at.isoformat() if inv.created_at else None,
-            "expiresAt": inv.expires_at.isoformat() if inv.expires_at else None,
-        }
-        for inv in invites
-    ]
 
