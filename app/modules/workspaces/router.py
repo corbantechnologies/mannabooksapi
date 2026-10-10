@@ -70,11 +70,19 @@ def serialize_shop(shop: Shop) -> dict:
         "slug": shop.slug,
         "code": getattr(shop, "code", None),
         "currency": shop.currency or "KES",
+        "shortName": getattr(shop, "short_name", None),
+        "phone": getattr(shop, "phone", None),
+        "website": getattr(shop, "website", None),
+        "logoUrl": getattr(shop, "logo_url", None),
+        "email": getattr(shop, "email", None),
         "taxPin": getattr(shop, "tax_pin", None),
         "isVatRegistered": getattr(shop, "is_vat_registered", False),
         "vatNumber": getattr(shop, "vat_number", None),
         "fiscalYearStartMonth": getattr(shop, "fiscal_year_start_month", 1),
         "isGlEnabled": getattr(shop, "is_gl_enabled", False),
+        "autoStockDeductionEnabled": getattr(shop, "auto_stock_deduction_enabled", True),
+        "businessMode": getattr(shop, "business_mode", "HYBRID") or "HYBRID",
+        "loyaltyEngineMode": getattr(shop, "loyalty_engine_mode", "OFF") or "OFF",
         "primaryColor": getattr(shop, "primary_color", "#064e3b") or "#064e3b",
         "plan": getattr(shop, "plan", "FREE") or "FREE",
         "subscriptionStatus": getattr(shop, "subscription_status", "ACTIVE") or "ACTIVE",
@@ -487,16 +495,21 @@ class CreateWorkspaceRequest(BaseModel):
 
 class WorkspaceSettingsUpdate(BaseModel):
     name: Optional[str] = None
+    short_name: Optional[str] = None
     currency: Optional[str] = None
     phone: Optional[str] = None
     website: Optional[str] = None
     email: Optional[str] = None
+    logo_url: Optional[str] = None
     primary_color: Optional[str] = None
     tax_pin: Optional[str] = None
     is_vat_registered: Optional[bool] = None
     vat_number: Optional[str] = None
     is_gl_enabled: Optional[bool] = None
     fiscal_year_start_month: Optional[int] = None
+    auto_stock_deduction_enabled: Optional[bool] = None
+    business_mode: Optional[str] = None
+    loyalty_engine_mode: Optional[str] = None
 
 
 class InviteMemberRequest(BaseModel):
@@ -569,19 +582,34 @@ async def create_workspace_endpoint(
 async def update_workspace_settings_endpoint(
     shop_id: str,
     req: WorkspaceSettingsUpdate,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    authorization: Optional[str] = Header(None, description="Bearer <session_token>"),
+    x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
     db: AsyncSession = Depends(get_db),
 ):
     """Update workspace parameters (name, currency, branding, tax settings)."""
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
+    from app.core.config import get_settings
+    settings = get_settings()
 
-    user = await verify_and_get_session(db, parts[1])
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
+    is_authed = False
+    if x_internal_key and x_internal_key == settings.INTERNAL_API_KEY:
+        is_authed = True
+    elif authorization and authorization.lower().startswith("bearer "):
+        parts = authorization.split()
+        if len(parts) == 2:
+            user = await verify_and_get_session(db, parts[1])
+            if user:
+                is_authed = True
 
-    q_shop = select(Shop).where(Shop.id == shop_id)
+    if not is_authed and settings.is_production:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized workspace mutation")
+
+    import uuid
+    try:
+        parsed_id = uuid.UUID(shop_id)
+    except Exception:
+        parsed_id = shop_id
+
+    q_shop = select(Shop).where(Shop.id == parsed_id)
     res_shop = await db.execute(q_shop)
     shop = res_shop.scalar_one_or_none()
     if not shop:
@@ -589,23 +617,40 @@ async def update_workspace_settings_endpoint(
 
     if req.name is not None:
         shop.name = req.name.strip()
+    if req.short_name is not None:
+        shop.short_name = req.short_name.strip() or None
     if req.currency is not None:
         shop.currency = req.currency.upper()[:3]
+    if req.phone is not None:
+        shop.phone = req.phone.strip() or None
+    if req.website is not None:
+        shop.website = req.website.strip() or None
+    if req.logo_url is not None:
+        shop.logo_url = req.logo_url.strip() or None
+    if req.email is not None:
+        shop.email = req.email.strip() or None
     if req.primary_color is not None:
         shop.primary_color = req.primary_color
     if req.tax_pin is not None:
-        shop.tax_pin = req.tax_pin.strip()
+        shop.tax_pin = req.tax_pin.strip() or None
     if req.is_vat_registered is not None:
         shop.is_vat_registered = req.is_vat_registered
     if req.vat_number is not None:
-        shop.vat_number = req.vat_number.strip()
+        shop.vat_number = req.vat_number.strip() or None
     if req.is_gl_enabled is not None:
         shop.is_gl_enabled = req.is_gl_enabled
     if req.fiscal_year_start_month is not None:
         shop.fiscal_year_start_month = req.fiscal_year_start_month
+    if req.auto_stock_deduction_enabled is not None:
+        shop.auto_stock_deduction_enabled = req.auto_stock_deduction_enabled
+    if req.business_mode is not None:
+        shop.business_mode = req.business_mode
+    if req.loyalty_engine_mode is not None:
+        shop.loyalty_engine_mode = req.loyalty_engine_mode
 
     await db.commit()
-    return {"success": True, "shop": {"id": str(shop.id), "name": shop.name, "slug": shop.slug}}
+    await db.refresh(shop)
+    return {"success": True, "shop": serialize_shop(shop)}
 
 
 @router.get("/{shop_id}/members")
@@ -808,3 +853,532 @@ async def remove_member_endpoint(
         member.is_active = False
         await db.commit()
     return {"success": True}
+
+
+# ==============================================================================
+# PAYMENT METHODS MANAGEMENT
+# ==============================================================================
+
+class PaymentMethodCreate(BaseModel):
+    type: str = "BANK"
+    name: str
+    details: str
+    is_default: bool = False
+    instructions: Optional[str] = None
+
+
+class PaymentMethodUpdate(BaseModel):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    details: Optional[str] = None
+    instructions: Optional[str] = None
+    is_default: Optional[bool] = None
+
+
+@router.get("/{shop_id}/payment-methods")
+async def list_payment_methods(
+    shop_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from sqlalchemy import desc, asc
+    from app.models.payment import PaymentMethod
+    try:
+        parsed_id = uuid.UUID(shop_id)
+    except Exception:
+        parsed_id = shop_id
+
+    q = select(PaymentMethod).where(PaymentMethod.shop_id == parsed_id).order_by(desc(PaymentMethod.is_default), asc(PaymentMethod.created_at))
+    res = await db.execute(q)
+    methods = res.scalars().all()
+    return {
+        "success": True,
+        "paymentMethods": [
+            {
+                "id": str(m.id),
+                "shopId": str(m.shop_id),
+                "type": m.type,
+                "name": m.name,
+                "details": m.details,
+                "isDefault": bool(m.is_default),
+                "instructions": m.instructions,
+                "createdAt": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in methods
+        ]
+    }
+
+
+@router.post("/{shop_id}/payment-methods")
+async def create_payment_method(
+    shop_id: str,
+    req: PaymentMethodCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from sqlalchemy import update
+    from app.models.payment import PaymentMethod
+    try:
+        parsed_id = uuid.UUID(shop_id)
+    except Exception:
+        parsed_id = shop_id
+
+    if req.is_default:
+        await db.execute(update(PaymentMethod).where(PaymentMethod.shop_id == parsed_id).values(is_default=False))
+
+    new_pm = PaymentMethod(
+        shop_id=parsed_id,
+        type=req.type,
+        name=req.name,
+        details=req.details,
+        is_default=req.is_default,
+        instructions=req.instructions,
+    )
+    db.add(new_pm)
+    await db.commit()
+    await db.refresh(new_pm)
+    return {"success": True, "methodId": str(new_pm.id)}
+
+
+@router.patch("/{shop_id}/payment-methods/{method_id}")
+async def update_payment_method_endpoint(
+    shop_id: str,
+    method_id: str,
+    req: PaymentMethodUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from sqlalchemy import update
+    from app.models.payment import PaymentMethod
+    try:
+        parsed_shop = uuid.UUID(shop_id)
+        parsed_mid = uuid.UUID(method_id)
+    except Exception:
+        parsed_shop = shop_id
+        parsed_mid = method_id
+
+    q = select(PaymentMethod).where(PaymentMethod.id == parsed_mid, PaymentMethod.shop_id == parsed_shop)
+    pm = (await db.execute(q)).scalar_one_or_none()
+    if not pm:
+        raise HTTPException(status_code=404, detail="Payment method not found")
+
+    if req.is_default:
+        await db.execute(update(PaymentMethod).where(PaymentMethod.shop_id == parsed_shop).values(is_default=False))
+        pm.is_default = True
+    elif req.is_default is not None:
+        pm.is_default = req.is_default
+
+    if req.name is not None:
+        pm.name = req.name
+    if req.type is not None:
+        pm.type = req.type
+    if req.details is not None:
+        pm.details = req.details
+    if req.instructions is not None:
+        pm.instructions = req.instructions
+
+    await db.commit()
+    return {"success": True}
+
+
+@router.delete("/{shop_id}/payment-methods/{method_id}")
+async def delete_payment_method_endpoint(
+    shop_id: str,
+    method_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from app.models.payment import PaymentMethod
+    try:
+        parsed_shop = uuid.UUID(shop_id)
+        parsed_mid = uuid.UUID(method_id)
+    except Exception:
+        parsed_shop = shop_id
+        parsed_mid = method_id
+
+    q = select(PaymentMethod).where(PaymentMethod.id == parsed_mid, PaymentMethod.shop_id == parsed_shop)
+    pm = (await db.execute(q)).scalar_one_or_none()
+    if pm:
+        await db.delete(pm)
+        await db.commit()
+    return {"success": True}
+
+
+@router.post("/{shop_id}/payment-methods/{method_id}/set-default")
+async def set_default_payment_method_endpoint(
+    shop_id: str,
+    method_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from sqlalchemy import update
+    from app.models.payment import PaymentMethod
+    try:
+        parsed_shop = uuid.UUID(shop_id)
+        parsed_mid = uuid.UUID(method_id)
+    except Exception:
+        parsed_shop = shop_id
+        parsed_mid = method_id
+
+    await db.execute(update(PaymentMethod).where(PaymentMethod.shop_id == parsed_shop).values(is_default=False))
+    await db.execute(update(PaymentMethod).where(PaymentMethod.id == parsed_mid, PaymentMethod.shop_id == parsed_shop).values(is_default=True))
+    await db.commit()
+    return {"success": True}
+
+
+# ==============================================================================
+# SHOP CURRENCIES MANAGEMENT
+# ==============================================================================
+
+class ShopCurrencyCreate(BaseModel):
+    code: str
+    name: str
+    symbol: str = "$"
+    exchange_rate: Decimal = Decimal("1.0000")
+    is_enabled: bool = True
+
+
+@router.get("/{shop_id}/currencies")
+async def list_shop_currencies(
+    shop_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from sqlalchemy import asc
+    from app.models.identity import ShopCurrency
+    try:
+        parsed_id = uuid.UUID(shop_id)
+    except Exception:
+        parsed_id = shop_id
+
+    q = select(ShopCurrency).where(ShopCurrency.shop_id == parsed_id).order_by(asc(ShopCurrency.code))
+    res = await db.execute(q)
+    currencies = res.scalars().all()
+    return {
+        "success": True,
+        "currencies": [
+            {
+                "id": str(c.id),
+                "shopId": str(c.shop_id),
+                "code": c.code,
+                "name": c.name,
+                "symbol": c.symbol,
+                "exchangeRate": str(c.exchange_rate),
+                "isEnabled": bool(c.is_enabled),
+                "updatedAt": c.updated_at.isoformat() if c.updated_at else None,
+            }
+            for c in currencies
+        ]
+    }
+
+
+@router.post("/{shop_id}/currencies")
+async def save_shop_currency(
+    shop_id: str,
+    req: ShopCurrencyCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from datetime import datetime
+    from app.models.identity import ShopCurrency
+    try:
+        parsed_id = uuid.UUID(shop_id)
+    except Exception:
+        parsed_id = shop_id
+
+    clean_code = req.code.strip().upper()
+    q = select(ShopCurrency).where(ShopCurrency.shop_id == parsed_id, ShopCurrency.code == clean_code)
+    existing = (await db.execute(q)).scalar_one_or_none()
+    if existing:
+        existing.name = req.name.strip()
+        existing.symbol = req.symbol.strip()
+        existing.exchange_rate = req.exchange_rate
+        existing.is_enabled = req.is_enabled
+        existing.updated_at = datetime.utcnow()
+    else:
+        new_c = ShopCurrency(
+            shop_id=parsed_id,
+            code=clean_code,
+            name=req.name.strip(),
+            symbol=req.symbol.strip(),
+            exchange_rate=req.exchange_rate,
+            is_enabled=req.is_enabled,
+        )
+        db.add(new_c)
+    await db.commit()
+    return {"success": True}
+
+
+@router.delete("/{shop_id}/currencies/{currency_id}")
+async def delete_shop_currency(
+    shop_id: str,
+    currency_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from app.models.identity import ShopCurrency
+    try:
+        parsed_shop = uuid.UUID(shop_id)
+        parsed_cid = uuid.UUID(currency_id)
+    except Exception:
+        parsed_shop = shop_id
+        parsed_cid = currency_id
+
+    q = select(ShopCurrency).where(ShopCurrency.id == parsed_cid, ShopCurrency.shop_id == parsed_shop)
+    curr = (await db.execute(q)).scalar_one_or_none()
+    if curr:
+        await db.delete(curr)
+        await db.commit()
+    return {"success": True}
+
+
+# ==============================================================================
+# SHOP TERMS MANAGEMENT
+# ==============================================================================
+
+class ShopTermCreate(BaseModel):
+    title: str
+    content: str
+    display_order: int = 0
+    is_default_invoice: bool = True
+    is_default_quote: bool = True
+    is_default_receipt: bool = False
+    is_default_delivery: bool = False
+    is_default_catalog: bool = False
+
+
+class ShopTermUpdate(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    display_order: Optional[int] = None
+    is_default_invoice: Optional[bool] = None
+    is_default_quote: Optional[bool] = None
+    is_default_receipt: Optional[bool] = None
+    is_default_delivery: Optional[bool] = None
+    is_default_catalog: Optional[bool] = None
+
+
+@router.get("/{shop_id}/terms")
+async def list_shop_terms(
+    shop_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from sqlalchemy import asc
+    from app.models.identity import ShopTerm
+    try:
+        parsed_id = uuid.UUID(shop_id)
+    except Exception:
+        parsed_id = shop_id
+
+    q = select(ShopTerm).where(ShopTerm.shop_id == parsed_id).order_by(asc(ShopTerm.display_order), asc(ShopTerm.created_at))
+    res = await db.execute(q)
+    terms = res.scalars().all()
+    return {
+        "success": True,
+        "terms": [
+            {
+                "id": str(t.id),
+                "shopId": str(t.shop_id),
+                "title": t.title,
+                "content": t.content,
+                "displayOrder": t.display_order,
+                "isDefaultInvoice": bool(t.is_default_invoice),
+                "isDefaultQuote": bool(t.is_default_quote),
+                "isDefaultReceipt": bool(t.is_default_receipt),
+                "isDefaultDelivery": bool(t.is_default_delivery),
+                "isDefaultCatalog": bool(t.is_default_catalog),
+                "createdAt": t.created_at.isoformat() if t.created_at else None,
+            }
+            for t in terms
+        ]
+    }
+
+
+@router.post("/{shop_id}/terms")
+async def create_shop_term(
+    shop_id: str,
+    req: ShopTermCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from app.models.identity import ShopTerm
+    try:
+        parsed_id = uuid.UUID(shop_id)
+    except Exception:
+        parsed_id = shop_id
+
+    term = ShopTerm(
+        shop_id=parsed_id,
+        title=req.title.strip(),
+        content=req.content.strip(),
+        display_order=req.display_order,
+        is_default_invoice=req.is_default_invoice,
+        is_default_quote=req.is_default_quote,
+        is_default_receipt=req.is_default_receipt,
+        is_default_delivery=req.is_default_delivery,
+        is_default_catalog=req.is_default_catalog,
+    )
+    db.add(term)
+    await db.commit()
+    await db.refresh(term)
+    return {"success": True, "termId": str(term.id)}
+
+
+@router.patch("/{shop_id}/terms/{term_id}")
+async def update_shop_term(
+    shop_id: str,
+    term_id: str,
+    req: ShopTermUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from app.models.identity import ShopTerm
+    try:
+        parsed_shop = uuid.UUID(shop_id)
+        parsed_tid = uuid.UUID(term_id)
+    except Exception:
+        parsed_shop = shop_id
+        parsed_tid = term_id
+
+    q = select(ShopTerm).where(ShopTerm.id == parsed_tid, ShopTerm.shop_id == parsed_shop)
+    term = (await db.execute(q)).scalar_one_or_none()
+    if not term:
+        raise HTTPException(status_code=404, detail="Term not found")
+
+    if req.title is not None:
+        term.title = req.title.strip()
+    if req.content is not None:
+        term.content = req.content.strip()
+    if req.display_order is not None:
+        term.display_order = req.display_order
+    if req.is_default_invoice is not None:
+        term.is_default_invoice = req.is_default_invoice
+    if req.is_default_quote is not None:
+        term.is_default_quote = req.is_default_quote
+    if req.is_default_receipt is not None:
+        term.is_default_receipt = req.is_default_receipt
+    if req.is_default_delivery is not None:
+        term.is_default_delivery = req.is_default_delivery
+    if req.is_default_catalog is not None:
+        term.is_default_catalog = req.is_default_catalog
+
+    await db.commit()
+    return {"success": True}
+
+
+@router.delete("/{shop_id}/terms/{term_id}")
+async def delete_shop_term(
+    shop_id: str,
+    term_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from app.models.identity import ShopTerm
+    try:
+        parsed_shop = uuid.UUID(shop_id)
+        parsed_tid = uuid.UUID(term_id)
+    except Exception:
+        parsed_shop = shop_id
+        parsed_tid = term_id
+
+    q = select(ShopTerm).where(ShopTerm.id == parsed_tid, ShopTerm.shop_id == parsed_shop)
+    term = (await db.execute(q)).scalar_one_or_none()
+    if term:
+        await db.delete(term)
+        await db.commit()
+    return {"success": True}
+
+
+@router.post("/{shop_id}/terms/seed-defaults")
+async def seed_default_terms(
+    shop_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    import uuid
+    from app.models.identity import ShopTerm
+    try:
+        parsed_id = uuid.UUID(shop_id)
+    except Exception:
+        parsed_id = shop_id
+
+    default_terms = [
+        {"title": "Payment Terms", "content": "Payment is strictly due within 14 days of invoice date unless otherwise specified in written contractual agreement.", "display_order": 1, "is_default_invoice": True, "is_default_quote": True},
+        {"title": "Quotation Validity", "content": "This quotation remains valid for 30 calendar days from the date of issuance, subject to stock availability.", "display_order": 2, "is_default_invoice": False, "is_default_quote": True},
+        {"title": "Ownership of Goods", "content": "All delivered items remain the legal property of the company until paid for in full.", "display_order": 3, "is_default_invoice": True, "is_default_quote": True},
+        {"title": "Delivery & Logistics", "content": "Standard delivery lead times within Nairobi are 24-48 business hours upon order confirmation and settlement.", "display_order": 4, "is_default_delivery": True, "is_default_catalog": True},
+        {"title": "Returns & Discrepancies", "content": "Goods once sold in good order cannot be returned without formal management authorization within 7 days.", "display_order": 5, "is_default_invoice": True, "is_default_receipt": True},
+    ]
+
+    for item in default_terms:
+        t = ShopTerm(
+            shop_id=parsed_id,
+            title=item["title"],
+            content=item["content"],
+            display_order=item["display_order"],
+            is_default_invoice=item.get("is_default_invoice", False),
+            is_default_quote=item.get("is_default_quote", False),
+            is_default_receipt=item.get("is_default_receipt", False),
+            is_default_delivery=item.get("is_default_delivery", False),
+            is_default_catalog=item.get("is_default_catalog", False),
+        )
+        db.add(t)
+
+    await db.commit()
+    return {"success": True}
+
+
+# ==============================================================================
+# BILLING OVERVIEW & HISTORY
+# ==============================================================================
+
+@router.get("/{shop_id}/billing/overview")
+async def get_shop_billing_overview(
+    shop_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieve full billing hub summary: active plan, dynamic pricing specs, and transaction history."""
+    import uuid
+    from sqlalchemy import desc
+    from app.models.identity import BillingTransaction
+
+    # 1. Plan Details
+    plan_details_res = await get_shop_plan_details_endpoint(shop_id=shop_id, db=db)
+    
+    # 2. Dynamic Available Plans
+    available_plans = list(PLAN_SPECS_DEF.values())
+
+    # 3. Transactions History
+    try:
+        parsed_id = uuid.UUID(shop_id)
+    except Exception:
+        parsed_id = shop_id
+
+    q_tx = select(BillingTransaction).where(BillingTransaction.shop_id == parsed_id).order_by(desc(BillingTransaction.created_at)).limit(10)
+    res_tx = await db.execute(q_tx)
+    transactions = [
+        {
+            "id": str(tx.id),
+            "shopId": str(tx.shop_id),
+            "checkoutRequestId": tx.checkout_request_id,
+            "merchantRequestId": tx.merchant_request_id,
+            "phoneNumber": tx.phone_number,
+            "amount": str(tx.amount),
+            "mpesaReceiptNumber": tx.mpesa_receipt_number,
+            "status": tx.status,
+            "resultCode": tx.result_code,
+            "resultDesc": tx.result_desc,
+            "targetPlan": tx.target_plan,
+            "billingMonths": tx.billing_months,
+            "createdAt": tx.created_at.isoformat() if tx.created_at else None,
+            "completedAt": tx.completed_at.isoformat() if tx.completed_at else None,
+        }
+        for tx in res_tx.scalars().all()
+    ]
+
+    return {
+        "success": True,
+        "planDetails": plan_details_res,
+        "availablePlans": available_plans,
+        "transactions": transactions,
+    }

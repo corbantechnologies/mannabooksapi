@@ -97,3 +97,96 @@ async def logout_endpoint(
     if len(parts) == 2 and parts[0].lower() == "bearer":
         await invalidate_session(db, parts[1])
     return {"success": True}
+
+
+from pydantic import BaseModel
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+@router.post("/forgot-password")
+async def forgot_password_endpoint(
+    req: ForgotPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate secure password reset token and return details for notification."""
+    import secrets
+    from datetime import datetime, timedelta
+    from app.models.identity import PasswordResetToken
+    from sqlalchemy import delete
+
+    clean_email = req.email.lower().strip()
+    q = select(User).where(User.email == clean_email)
+    res = await db.execute(q)
+    user = res.scalar_one_or_none()
+
+    if not user:
+        return {"success": True}
+
+    del_stmt = delete(PasswordResetToken).where(PasswordResetToken.user_id == user.id)
+    await db.execute(del_stmt)
+
+    raw_token = secrets.token_hex(32)
+    expires_at = datetime.utcnow() + timedelta(hours=1)
+
+    reset_rec = PasswordResetToken(
+        user_id=user.id,
+        token=raw_token,
+        expires_at=expires_at,
+    )
+    db.add(reset_rec)
+    await db.commit()
+
+    return {
+        "success": True,
+        "token": raw_token,
+        "userName": user.name,
+        "email": user.email,
+    }
+
+
+@router.post("/reset-password")
+async def reset_password_endpoint(
+    req: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Validate reset token and update user password."""
+    from datetime import datetime
+    from app.models.identity import PasswordResetToken
+    from app.modules.auth.service import hash_password
+
+    now = datetime.utcnow()
+    q = (
+        select(PasswordResetToken)
+        .where(
+            PasswordResetToken.token == req.token,
+            PasswordResetToken.expires_at > now,
+        )
+    )
+    res = await db.execute(q)
+    token_match = res.scalar_one_or_none()
+
+    if not token_match:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The reset link is invalid or has expired. Please request a new one."
+        )
+
+    q_user = select(User).where(User.id == token_match.user_id)
+    user = (await db.execute(q_user)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    user.password_hash = hash_password(req.new_password)
+    await db.delete(token_match)
+    await db.commit()
+
+    return {"success": True}
+

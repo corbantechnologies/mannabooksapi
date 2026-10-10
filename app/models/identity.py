@@ -51,16 +51,73 @@ class Shop(Base):
     slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
     code: Mapped[Optional[str]] = mapped_column(String(10), unique=True, nullable=True)
     currency: Mapped[str] = mapped_column(String(3), default="KES", nullable=False)
+    short_name: Mapped[Optional[str]] = mapped_column("short_name", String(50), nullable=True)
+    phone: Mapped[Optional[str]] = mapped_column("phone", String(50), nullable=True)
+    website: Mapped[Optional[str]] = mapped_column("website", Text, nullable=True)
+    logo_url: Mapped[Optional[str]] = mapped_column("logo_url", Text, nullable=True)
+    email: Mapped[Optional[str]] = mapped_column("email", String(255), nullable=True)
     tax_pin: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     is_vat_registered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     vat_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     fiscal_year_start_month: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     is_gl_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auto_stock_deduction_enabled: Mapped[bool] = mapped_column("auto_stock_deduction_enabled", Boolean, default=True, nullable=False)
+    business_mode: Mapped[str] = mapped_column("business_mode", String(20), default="HYBRID", nullable=False)
+    loyalty_engine_mode: Mapped[str] = mapped_column("loyalty_engine_mode", String(30), default="OFF", nullable=False)
     primary_color: Mapped[str] = mapped_column(String(20), default="#000000", nullable=False)
     plan: Mapped[str] = mapped_column(String(30), default="FREE", nullable=False)
     subscription_status: Mapped[str] = mapped_column(String(30), default="ACTIVE", nullable=False)
     is_lifetime_pro: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ShopTerm(Base):
+    __tablename__ = "shop_terms"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    display_order: Mapped[int] = mapped_column("display_order", Integer, default=0, nullable=False)
+    is_default_invoice: Mapped[bool] = mapped_column("is_default_invoice", Boolean, default=True, nullable=False)
+    is_default_quote: Mapped[bool] = mapped_column("is_default_quote", Boolean, default=True, nullable=False)
+    is_default_receipt: Mapped[bool] = mapped_column("is_default_receipt", Boolean, default=False, nullable=False)
+    is_default_delivery: Mapped[bool] = mapped_column("is_default_delivery", Boolean, default=False, nullable=False)
+    is_default_catalog: Mapped[bool] = mapped_column("is_default_catalog", Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ShopCurrency(Base):
+    __tablename__ = "shop_currencies"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    code: Mapped[str] = mapped_column(String(3), nullable=False)
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(10), default="$", nullable=False)
+    exchange_rate: Mapped[Decimal] = mapped_column("exchange_rate", Numeric(12, 4), default=Decimal("1.0000"), nullable=False)
+    is_enabled: Mapped[bool] = mapped_column("is_enabled", Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column("updated_at", DateTime, default=datetime.utcnow, nullable=False)
+
+
+class BillingTransaction(Base):
+    __tablename__ = "billing_transactions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    checkout_request_id: Mapped[str] = mapped_column("checkout_request_id", String(100), unique=True, nullable=False)
+    merchant_request_id: Mapped[Optional[str]] = mapped_column("merchant_request_id", String(100), nullable=True)
+    phone_number: Mapped[str] = mapped_column("phone_number", String(30), nullable=False)
+    amount: Mapped[Decimal] = mapped_column("amount", Numeric(12, 2), nullable=False)
+    mpesa_receipt_number: Mapped[Optional[str]] = mapped_column("mpesa_receipt_number", String(50), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="PENDING", nullable=False)
+    result_code: Mapped[Optional[int]] = mapped_column("result_code", Integer, nullable=True)
+    result_desc: Mapped[Optional[str]] = mapped_column("result_desc", Text, nullable=True)
+    target_plan: Mapped[str] = mapped_column("target_plan", String(30), nullable=False)
+    billing_months: Mapped[int] = mapped_column("billing_months", Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
+    completed_at: Mapped[Optional[datetime]] = mapped_column("completed_at", DateTime, nullable=True)
 
 
 class ShopMember(Base):
@@ -96,5 +153,17 @@ class ShopInvitation(Base):
     status: Mapped[str] = mapped_column(String(30), default="PENDING", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-
     shop: Mapped["Shop"] = relationship("Shop", lazy="selectin")
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user: Mapped["User"] = relationship("User", lazy="selectin")
+

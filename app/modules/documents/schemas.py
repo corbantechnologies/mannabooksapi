@@ -17,9 +17,9 @@ class DocumentItemInput(BaseModel):
 class DocumentCreateRequest(BaseModel):
     client_id: Optional[uuid.UUID] = None
     supplier_id: Optional[uuid.UUID] = None
-    type: Literal["INVOICE", "RECEIPT", "QUOTE", "LPO", "DELIVERY_NOTE", "PAYMENT_VOUCHER"] = "INVOICE"
+    type: str = "INVOICE"
     doc_number: Optional[str] = None
-    status: Literal["DRAFT", "ISSUED", "PAID", "CANCELLED"] = "DRAFT"
+    status: str = "DRAFT"
     notes: Optional[str] = None
     terms_and_conditions: Optional[str] = None
     currency: Optional[str] = "KES"
@@ -50,7 +50,7 @@ class CreditNoteCreateRequest(BaseModel):
 
 
 class DocumentStatusUpdateRequest(BaseModel):
-    status: Literal["DRAFT", "ISSUED", "PAID", "CANCELLED"]
+    status: str
 
 
 class DocumentItemResponse(BaseModel):

@@ -18,6 +18,7 @@ from app.modules.hr.router import router as hr_router
 from app.modules.crm.router import router as crm_router
 from app.modules.operations.router import router as operations_router
 from app.modules.governance.router import router as governance_router
+from app.modules.admin.router import router as admin_router
 
 settings = get_settings()
 
@@ -99,6 +100,7 @@ app.include_router(hr_router, prefix="/v1")
 app.include_router(crm_router, prefix="/v1")
 app.include_router(operations_router, prefix="/v1")
 app.include_router(governance_router, prefix="/v1")
+app.include_router(admin_router, prefix="/v1")
 
 
 @app.get("/")

@@ -2,7 +2,7 @@ import asyncio
 from app.db.session import engine
 from app.db.base import Base
 # Import all model modules so they register on Base.metadata
-from app.models.identity import User, Session, Shop, ShopMember
+from app.models.identity import User, Session, Shop, ShopMember, PasswordResetToken, ShopTerm, ShopCurrency, BillingTransaction
 from app.models.etims import EtimsConfig, EtimsSequence, EtimsTransmission
 from app.models.client import Client
 from app.models.supplier import Supplier
@@ -10,7 +10,7 @@ from app.models.item import Product
 from app.models.inventory import StockLocation, StockLedger
 from app.models.account import ChartOfAccount, FiscalYear
 from app.models.document import Document, DocumentItem
-from app.models.payment import DocumentPayment
+from app.models.payment import DocumentPayment, PaymentMethod
 from app.models.expense import Expense, Income
 from app.models.journal import JournalEntry
 from app.models.hr import Employee, ExpenseClaim

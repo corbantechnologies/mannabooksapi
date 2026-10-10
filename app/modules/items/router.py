@@ -78,3 +78,32 @@ async def adjust_stock_endpoint(
         return await record_stock_adjustment(db, shop_id=shop_id, req=req)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.get("/locations")
+async def list_stock_locations_endpoint(
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import select, desc, asc
+    from app.models.inventory import StockLocation
+
+    stmt = select(StockLocation).where(
+        StockLocation.shop_id == shop_id,
+        StockLocation.is_active == True,
+    ).order_by(desc(StockLocation.is_default), asc(StockLocation.name))
+    res = await db.execute(stmt)
+    locs = res.scalars().all()
+    return [
+        {
+            "id": str(loc.id),
+            "shopId": str(loc.shop_id),
+            "name": loc.name,
+            "address": loc.address,
+            "isDefault": bool(loc.is_default),
+            "isActive": bool(loc.is_active),
+            "createdAt": loc.created_at.isoformat() if loc.created_at else None,
+        }
+        for loc in locs
+    ]
+
