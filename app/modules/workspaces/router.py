@@ -9,7 +9,60 @@ from app.modules.auth.service import verify_and_get_session
 router = APIRouter(prefix="/workspaces", tags=["Workspaces"])
 
 
-@router.get("/by-slug/{slug}/context", dependencies=[Depends(verify_internal_api_key)])
+@router.get("/my-workspaces")
+async def get_my_workspaces_endpoint(
+    authorization: str = Header(..., description="Bearer <session_token>"),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all workspaces the authenticated user belongs to, auto-healing owner memberships."""
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
+
+    token = parts[1]
+    user = await verify_and_get_session(db, token)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
+
+    q_members = (
+        select(ShopMember, Shop)
+        .join(Shop, ShopMember.shop_id == Shop.id)
+        .where(ShopMember.user_id == user.id, ShopMember.is_active == True)
+    )
+    res_members = await db.execute(q_members)
+    results = res_members.all()
+
+    workspaces = []
+    seen_ids = set()
+    for member, shop in results:
+        seen_ids.add(shop.id)
+        workspaces.append({
+            "id": str(shop.id),
+            "name": shop.name,
+            "slug": shop.slug,
+            "role": member.role,
+        })
+
+    # Auto-heal: owned shops without membership
+    q_owned = select(Shop).where(Shop.owner_id == user.id)
+    res_owned = await db.execute(q_owned)
+    owned_shops = res_owned.scalars().all()
+    for shop in owned_shops:
+        if shop.id not in seen_ids:
+            new_mem = ShopMember(shop_id=shop.id, user_id=user.id, role="OWNER", is_active=True)
+            db.add(new_mem)
+            await db.commit()
+            workspaces.append({
+                "id": str(shop.id),
+                "name": shop.name,
+                "slug": shop.slug,
+                "role": "OWNER",
+            })
+
+    return {"success": True, "workspaces": workspaces}
+
+
+@router.get("/by-slug/{slug}/context")
 async def get_workspace_context_by_slug(
     slug: str,
     authorization: str = Header(..., description="Bearer <session_token>"),
