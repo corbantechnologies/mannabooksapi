@@ -59,6 +59,17 @@ app.include_router(reports_router, prefix="/v1")
 app.include_router(crons_router, prefix="/v1")
 
 
+@app.get("/")
+async def root():
+    return {
+        "service": "MannaBooks Decoupled API & KRA eTIMS Engine",
+        "status": "online",
+        "env": settings.ENVIRONMENT,
+        "docs": "/docs" if not settings.is_production else None,
+        "health": "/health",
+    }
+
+
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "env": settings.ENVIRONMENT, "service": "mannabooksapi"}
