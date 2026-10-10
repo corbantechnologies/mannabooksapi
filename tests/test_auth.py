@@ -35,7 +35,6 @@ async def test_auth_registration_and_login_flow():
         test_email = f"merchant_{unique_suffix}@mannabooks.co.ke"
 
         headers = {
-            "X-Internal-Key": settings.INTERNAL_API_KEY,
             "Content-Type": "application/json",
         }
 
@@ -74,7 +73,6 @@ async def test_auth_registration_and_login_flow():
 
         # 4. Verify session with /v1/auth/me
         auth_headers = {
-            "X-Internal-Key": settings.INTERNAL_API_KEY,
             "Authorization": f"Bearer {data_login['token']}",
         }
         res_me = await ac.get("/v1/auth/me", headers=auth_headers)

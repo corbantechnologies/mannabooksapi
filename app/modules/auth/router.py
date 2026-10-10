@@ -21,7 +21,7 @@ from app.modules.auth.service import (
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-@router.post("/register", response_model=SessionResponse, dependencies=[Depends(verify_internal_api_key)])
+@router.post("/register", response_model=SessionResponse)
 async def register_endpoint(
     req: RegisterOwnerRequest,
     db: AsyncSession = Depends(get_db),
@@ -30,7 +30,7 @@ async def register_endpoint(
     return await register_owner_account(db, req)
 
 
-@router.post("/login", response_model=SessionResponse, dependencies=[Depends(verify_internal_api_key)])
+@router.post("/login", response_model=SessionResponse)
 async def login_endpoint(
     req: LoginRequest,
     db: AsyncSession = Depends(get_db),
@@ -59,7 +59,7 @@ async def login_endpoint(
     )
 
 
-@router.get("/me", dependencies=[Depends(verify_internal_api_key)])
+@router.get("/me")
 async def get_current_user_endpoint(
     authorization: str = Header(..., description="Bearer <session_token>"),
     db: AsyncSession = Depends(get_db),
@@ -87,7 +87,7 @@ async def get_current_user_endpoint(
     }
 
 
-@router.post("/logout", dependencies=[Depends(verify_internal_api_key)])
+@router.post("/logout")
 async def logout_endpoint(
     authorization: str = Header(..., description="Bearer <session_token>"),
     db: AsyncSession = Depends(get_db),
