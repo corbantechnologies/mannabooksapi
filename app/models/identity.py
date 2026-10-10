@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 from sqlalchemy import (
     String,
@@ -9,10 +10,12 @@ from sqlalchemy import (
     Text,
     Integer,
     JSON,
+    Numeric,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
+
 
 
 class User(Base):
