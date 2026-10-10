@@ -7,7 +7,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 from app.models.identity import User, Session, Shop, ShopMember
 from app.core.config import get_settings
-from app.core.security import create_access_token
+from app.core.security import create_access_token, verify_access_token
 
 settings = get_settings()
 
@@ -41,10 +41,19 @@ async def create_session(db: AsyncSession, user_id) -> Tuple[str, datetime]:
 
 
 async def verify_and_get_session(db: AsyncSession, token: str) -> Optional[User]:
-    """Legacy session validation."""
+    """Verify session token: Checks JWT first, then falls back to legacy DB session."""
     if not token:
         return None
 
+    # 1. Try JWT validation
+    user_id = verify_access_token(token)
+    if user_id:
+        res = await db.execute(select(User).where(User.id == user_id))
+        user = res.scalar_one_or_none()
+        if user:
+            return user
+
+    # 2. Fallback to legacy stateful DB session
     q = (
         select(Session)
         .where(Session.id == token)
