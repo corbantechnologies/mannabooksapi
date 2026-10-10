@@ -82,10 +82,16 @@ async def create_audit_log(
 @router.get("/governance/notifications")
 async def list_notifications(
     shop_id: Optional[str] = Query(None),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    authorization: Optional[str] = Header(None, description="Bearer <session_token>"),
     db: AsyncSession = Depends(get_db),
 ):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     parts = authorization.split()
+    if len(parts) < 2:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     user = await verify_and_get_session(db, parts[1])
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
