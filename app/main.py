@@ -28,13 +28,47 @@ async def lifespan(app: FastAPI):
     yield
 
 
+import secrets
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
+
 app = FastAPI(
     title="MannaBooks Decoupled API & KRA eTIMS Engine",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url="/docs" if not settings.is_production else None,
+    docs_url=None,
     redoc_url=None,
+    openapi_url=None,
 )
+
+docs_security = HTTPBasic()
+
+
+def authenticate_docs(credentials: HTTPBasicCredentials = Depends(docs_security)):
+    creds = settings.docs_credentials_dict
+    if not creds:
+        # Default fallback if empty
+        creds = {"admin": "mannabooks2026"}
+    expected_password = creds.get(credentials.username)
+    if not expected_password or not secrets.compare_digest(credentials.password, expected_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return True
+
+
+@app.get("/docs", include_in_schema=False)
+async def get_swagger_docs(auth: bool = Depends(authenticate_docs)):
+    return get_swagger_ui_html(openapi_url="/openapi.json", title=f"{app.title} - API Documentation")
+
+
+@app.get("/openapi.json", include_in_schema=False)
+async def get_openapi_schema(auth: bool = Depends(authenticate_docs)):
+    return get_openapi(title=app.title, version=app.version, routes=app.routes)
 
 # CORS restricted in production
 app.add_middleware(

@@ -53,6 +53,11 @@ class Shop(Base):
     vat_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     fiscal_year_start_month: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     is_gl_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    primary_color: Mapped[str] = mapped_column(String(20), default="#000000", nullable=False)
+    plan: Mapped[str] = mapped_column(String(30), default="FREE", nullable=False)
+    subscription_status: Mapped[str] = mapped_column(String(30), default="ACTIVE", nullable=False)
+    is_lifetime_pro: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class ShopMember(Base):

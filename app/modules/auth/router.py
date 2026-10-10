@@ -15,9 +15,19 @@ from app.modules.auth.service import (
     create_session,
     verify_and_get_session,
     invalidate_session,
+    register_owner_account,
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+
+@router.post("/register", response_model=SessionResponse, dependencies=[Depends(verify_internal_api_key)])
+async def register_endpoint(
+    req: RegisterOwnerRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Registers new merchant account, provisions shop workspace, and returns session token."""
+    return await register_owner_account(db, req)
 
 
 @router.post("/login", response_model=SessionResponse, dependencies=[Depends(verify_internal_api_key)])

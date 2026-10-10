@@ -29,11 +29,27 @@ class Settings(BaseSettings):
     KRA_ETIMS_BASE_URL: str = "https://timsvscu.kra.go.ke/etims-api"
     KRA_ETIMS_AES_ENCRYPTION_KEY: str  # 32 bytes master key strictly from environment
 
+    # API Docs Basic Auth credentials (comma-separated username:password pairs)
+    DOCS_USERS: str = "admin:mannabooks2026,team:stagingpass2026"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def docs_credentials_dict(self) -> dict[str, str]:
+        """Parses comma-separated 'username:password,user2:pass2' into a dictionary."""
+        creds = {}
+        if not self.DOCS_USERS:
+            return creds
+        for pair in self.DOCS_USERS.split(","):
+            pair = pair.strip()
+            if ":" in pair:
+                user, pwd = pair.split(":", 1)
+                creds[user.strip()] = pwd.strip()
+        return creds
 
     @property
     def is_production(self) -> bool:
