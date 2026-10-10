@@ -10,7 +10,7 @@ from app.models.identity import Shop, User
 from app.models.client import Client
 from app.models.item import Product
 from app.models.inventory import StockLedger
-from app.models.document import Document, DocumentItem
+from app.models.document import Document, DocumentItem, DocumentToken
 
 
 @pytest.mark.asyncio
@@ -166,9 +166,22 @@ async def test_documents_and_credit_note_lifecycle():
             assert status_res.status_code == 200
             assert status_res.json()["status"] == "PAID"
 
+            # 5. Test recurring-cycle generation
+            recurring_res = await client.post(
+                f"/v1/documents/{parent_inv_id}/recurring-cycle?shop_id={test_shop_id}",
+                headers=headers,
+            )
+            assert recurring_res.status_code == 200
+            rec_data = recurring_res.json()
+            assert rec_data["success"] is True
+            assert "newDocId" in rec_data
+
     finally:
         async with async_session_factory() as session:
             await session.execute(delete(StockLedger).where(StockLedger.shop_id == test_shop_id))
+            shop_doc_ids = select(Document.id).where(Document.shop_id == test_shop_id)
+            await session.execute(delete(DocumentToken).where(DocumentToken.document_id.in_(shop_doc_ids)))
+            await session.execute(delete(DocumentItem).where(DocumentItem.document_id.in_(shop_doc_ids)))
             await session.execute(delete(DocumentItem).where(DocumentItem.product_id == prod_id))
             await session.execute(delete(Document).where(Document.shop_id == test_shop_id))
             await session.execute(delete(Product).where(Product.shop_id == test_shop_id))

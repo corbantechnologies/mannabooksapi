@@ -32,7 +32,7 @@ async def create_supplier(db: AsyncSession, shop_id: uuid.UUID, req: SupplierCre
     supplier = Supplier(
         shop_id=shop_id,
         name=req.name.strip(),
-        email=req.email.lower().strip(),
+        email=req.email.lower().strip() if req.email else None,
         phone=req.phone.strip() if req.phone else None,
         supplier_type=req.supplier_type,
         tax_pin=req.tax_pin.upper().strip() if req.tax_pin else None,
@@ -70,3 +70,108 @@ async def update_supplier(
     await db.commit()
     await db.refresh(supplier)
     return supplier
+
+
+async def delete_supplier(db: AsyncSession, shop_id: uuid.UUID, supplier_id: uuid.UUID) -> bool:
+    supplier = await get_supplier_by_id(db, shop_id, supplier_id)
+    if not supplier:
+        return False
+    await db.delete(supplier)
+    await db.commit()
+    return True
+
+
+async def get_supplier_statement(
+    db: AsyncSession,
+    shop_id: uuid.UUID,
+    supplier_id: uuid.UUID,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+):
+    from app.models.document import Document
+    from app.models.identity import Shop
+
+    q_sup = select(Supplier).where(and_(Supplier.id == supplier_id, Supplier.shop_id == shop_id))
+    sup_res = await db.execute(q_sup)
+    supplier = sup_res.scalar_one_or_none()
+    if not supplier:
+        return None
+
+    q_shop = select(Shop).where(Shop.id == shop_id)
+    shop_res = await db.execute(q_shop)
+    shop = shop_res.scalar_one_or_none()
+
+    start = start_date or datetime(datetime.utcnow().year, 1, 1)
+    end = end_date or datetime.utcnow()
+
+    q_docs = (
+        select(Document)
+        .where(
+            and_(
+                Document.shop_id == shop_id,
+                Document.supplier_id == supplier_id,
+                Document.issue_date >= start,
+                Document.issue_date <= end,
+            )
+        )
+        .order_by(Document.issue_date.asc())
+    )
+    docs_res = await db.execute(q_docs)
+    docs = docs_res.scalars().all()
+
+    running_balance = 0.0
+    total_debits = 0.0
+    total_credits = 0.0
+    lines = []
+
+    for doc in docs:
+        amount = float(doc.grand_total or 0.0)
+        debit = 0.0
+        credit = 0.0
+
+        if doc.type in ["INVOICE", "GOODS_RECEIVED_NOTE", "SERVICE_COMPLETION_NOTE", "PO", "LPO", "LSO"]:
+            if doc.status != "CANCELLED":
+                credit = amount
+                running_balance += amount
+                total_credits += amount
+        elif doc.type in ["PAYMENT_VOUCHER", "RECEIPT"]:
+            if doc.status != "CANCELLED":
+                debit = amount
+                running_balance -= amount
+                total_debits += amount
+        elif doc.type == "DEBIT_NOTE":
+            if doc.status != "CANCELLED":
+                debit = amount
+                running_balance -= amount
+                total_debits += amount
+
+        lines.append({
+            "id": str(doc.id),
+            "date": doc.issue_date.isoformat() if doc.issue_date else "",
+            "documentNumber": doc.doc_number,
+            "documentType": doc.type,
+            "description": doc.notes or f"{doc.type} #{doc.doc_number}",
+            "debit": debit,
+            "credit": credit,
+            "runningBalance": running_balance,
+            "status": doc.status,
+        })
+
+    return {
+        "success": True,
+        "data": {
+            "supplierName": supplier.name,
+            "supplierEmail": supplier.email or "",
+            "supplierPhone": supplier.phone or "",
+            "taxPin": supplier.tax_pin or "",
+            "currency": (shop.currency if shop else "KES") or "KES",
+            "shopName": shop.name if shop else "",
+            "periodLabel": f"{start.strftime('%d %b %Y')} – {end.strftime('%d %b %Y')}",
+            "lines": lines,
+            "totalDebits": total_debits,
+            "totalCredits": total_credits,
+            "closingBalance": running_balance,
+        }
+    }
+
+

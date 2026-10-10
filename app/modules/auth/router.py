@@ -59,6 +59,37 @@ async def login_endpoint(
     )
 
 
+@router.post("/token")
+async def token_endpoint(
+    req: LoginRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """OAuth2 / token endpoint returning access_token and user profile."""
+    q = select(User).where(User.email == req.email.lower().strip())
+    res = await db.execute(q)
+    user = res.scalar_one_or_none()
+
+    if not user or not verify_password(req.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid email address or password."
+        )
+
+    token, _ = await create_session(db, user.id)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "is_super_admin": user.is_super_admin,
+            "plan": user.plan,
+            "subscription_status": user.subscription_status,
+        }
+    }
+
+
 @router.get("/me")
 async def get_current_user_endpoint(
     authorization: str = Header(..., description="Bearer <session_token>"),

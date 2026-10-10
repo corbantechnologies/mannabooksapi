@@ -1,6 +1,6 @@
 import uuid
 from typing import Optional
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, text
 from sqlalchemy.orm import selectinload
@@ -119,14 +119,21 @@ async def get_workspace_context_by_slug(
     if not shop:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
 
+    user_data = {
+        "id": str(user.id),
+        "name": user.name,
+        "email": user.email,
+        "isSuperAdmin": getattr(user, "is_super_admin", False),
+    }
+
     # SuperAdmin Bypass
     if user.is_super_admin:
         return {
             "success": True,
             "role": "OWNER",
             "shop": serialize_shop(shop),
+            "user": user_data,
         }
-
 
     # Membership check & Auto-Heal Owner
     q_member = select(ShopMember).where(ShopMember.shop_id == shop.id, ShopMember.user_id == user.id)
@@ -150,6 +157,7 @@ async def get_workspace_context_by_slug(
         "success": True,
         "role": membership.role,
         "shop": serialize_shop(shop),
+        "user": user_data,
     }
 
 
@@ -708,6 +716,33 @@ async def get_workspace_members_endpoint(
                 "email": u.email,
             },
         })
+
+    # Auto-include workspace owner if not explicitly listed in shop_members
+    q_shop = select(Shop).where(Shop.id == s_uuid)
+    shop_obj = (await db.execute(q_shop)).scalar_one_or_none()
+    if shop_obj and shop_obj.owner_id:
+        owner_in_list = any(m["userId"] == str(shop_obj.owner_id) for m in members_data)
+        if not owner_in_list:
+            q_owner = select(User).where(User.id == shop_obj.owner_id)
+            owner_u = (await db.execute(q_owner)).scalar_one_or_none()
+            if owner_u:
+                members_data.insert(0, {
+                    "id": f"owner-{owner_u.id}",
+                    "userId": str(owner_u.id),
+                    "name": owner_u.name,
+                    "email": owner_u.email,
+                    "role": "OWNER",
+                    "customPermissions": "{}",
+                    "hideCostPrices": False,
+                    "directApprovalLimit": 999999999.0,
+                    "isActive": True,
+                    "createdAt": shop_obj.created_at.isoformat() if shop_obj.created_at else None,
+                    "user": {
+                        "id": str(owner_u.id),
+                        "name": owner_u.name,
+                        "email": owner_u.email,
+                    },
+                })
 
     q_invites = select(ShopInvitation).where(ShopInvitation.shop_id == s_uuid, text("shop_invitations.status::text = 'PENDING'"))
     res_invites = await db.execute(q_invites)
@@ -1403,6 +1438,7 @@ async def get_shop_billing_overview(
 
     # 1. Plan Details
     plan_details_res = await get_shop_plan_details_endpoint(shop_id=shop_id, db=db)
+    pd_clean = plan_details_res.get("planDetails", plan_details_res) if isinstance(plan_details_res, dict) else plan_details_res
     
     # 2. Dynamic Available Plans
     available_plans = list(PLAN_SPECS_DEF.values())
@@ -1437,8 +1473,50 @@ async def get_shop_billing_overview(
 
     return {
         "success": True,
-        "planDetails": plan_details_res,
+        "planDetails": pd_clean,
         "availablePlans": available_plans,
         "transactions": transactions,
     }
+
+
+@router.delete("/{shop_id}")
+async def delete_workspace_endpoint(
+    shop_id: str,
+    confirmation: Optional[str] = Query(None),
+    authorization: str = Header(..., description="Bearer <session_token>"),
+    db: AsyncSession = Depends(get_db),
+):
+    parts = authorization.split()
+    user = await verify_and_get_session(db, parts[1])
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        parsed_id = uuid.UUID(shop_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid shop ID")
+
+    q_shop = select(Shop).where(Shop.id == parsed_id)
+    res_shop = await db.execute(q_shop)
+    shop = res_shop.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    is_owner = shop.owner_id == user.id
+    if not is_owner and not user.is_super_admin:
+        raise HTTPException(status_code=403, detail="Only workspace owner or super admin can delete this workspace")
+
+    allowed = [shop.slug.lower().strip(), (shop.code or "").lower().strip(), shop.name.lower().strip(), "delete"]
+    if confirmation and confirmation.lower().strip() not in allowed:
+        raise HTTPException(status_code=400, detail=f"Confirmation mismatch. Type '{shop.slug}' or 'DELETE'")
+
+    await db.execute(text("DELETE FROM shop_members WHERE shop_id = :sid"), {"sid": parsed_id})
+    await db.delete(shop)
+    await db.commit()
+
+    q_next = select(Shop).join(ShopMember, ShopMember.shop_id == Shop.id).where(ShopMember.user_id == user.id, ShopMember.is_active == True).limit(1)
+    res_next = await db.execute(q_next)
+    next_shop = res_next.scalar_one_or_none()
+
+    return {"success": True, "nextSlug": next_shop.slug if next_shop else None}
 

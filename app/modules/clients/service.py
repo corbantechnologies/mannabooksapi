@@ -32,7 +32,7 @@ async def create_client(db: AsyncSession, shop_id: uuid.UUID, req: ClientCreateR
     client = Client(
         shop_id=shop_id,
         name=req.name.strip(),
-        email=req.email.lower().strip(),
+        email=req.email.lower().strip() if req.email else "",
         phone=req.phone.strip() if req.phone else None,
         client_type=req.client_type,
         tax_pin=req.tax_pin.upper().strip() if req.tax_pin else None,
@@ -54,7 +54,7 @@ async def update_client(
     if req.name is not None:
         client.name = req.name.strip()
     if req.email is not None:
-        client.email = req.email.lower().strip()
+        client.email = req.email.lower().strip() if req.email else ""
     if req.phone is not None:
         client.phone = req.phone.strip() if req.phone else None
     if req.client_type is not None:

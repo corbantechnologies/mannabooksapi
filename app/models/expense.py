@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
-from sqlalchemy import String, Boolean, DateTime, ForeignKey, Numeric, Text
+from sqlalchemy import String, Boolean, DateTime, ForeignKey, Numeric, Text, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
@@ -16,7 +16,12 @@ class Expense(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), default="KES", nullable=False)
-    category: Mapped[str] = mapped_column(String(50), default="OTHER", nullable=False)
+    category: Mapped[str] = mapped_column(
+        "category",
+        SQLEnum('RENT', 'UTILITIES', 'FUEL', 'MARKETING', 'SALARIES', 'OFFICE_SUPPLIES', 'OTHER', name="expense_category", create_type=False),
+        default="OTHER",
+        nullable=False,
+    )
     expense_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     payment_channel: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     payment_reference: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -33,7 +38,12 @@ class Income(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), default="KES", nullable=False)
-    category: Mapped[str] = mapped_column(String(50), default="OTHER", nullable=False)
+    category: Mapped[str] = mapped_column(
+        "category",
+        SQLEnum('INTEREST', 'DIVIDENDS', 'ASSET_SALE', 'REFUNDS', 'COMMISSION', 'RENTAL_INCOME', 'GRANTS_SUBSIDIES', 'OTHER', name="income_category", create_type=False),
+        default="OTHER",
+        nullable=False,
+    )
     income_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     payment_channel: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     payment_reference: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)

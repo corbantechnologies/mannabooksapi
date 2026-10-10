@@ -68,6 +68,20 @@ async def update_item_endpoint(
     return item
 
 
+@router.delete("/{item_id}")
+async def delete_item_endpoint(
+    item_id: uuid.UUID,
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.modules.items.service import delete_item
+    deleted = await delete_item(db, shop_id=shop_id, item_id=item_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+    return {"success": True, "message": "Item deleted successfully"}
+
+
+
 @router.post("/inventory/adjust", response_model=StockLedgerResponse, status_code=status.HTTP_201_CREATED)
 async def adjust_stock_endpoint(
     req: StockAdjustmentRequest,
@@ -80,11 +94,56 @@ async def adjust_stock_endpoint(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
-@router.get("/locations")
-async def list_stock_locations_endpoint(
+@router.post("/inventory/reconcile")
+async def reconcile_inventory_endpoint(
     shop_id: uuid.UUID = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
+    from sqlalchemy import select, and_
+    from app.models.item import Product
+    from app.models.inventory import StockLocation
+
+    loc_q = select(StockLocation).where(
+        and_(StockLocation.shop_id == shop_id, StockLocation.is_active == True)
+    )
+    loc_res = await db.execute(loc_q)
+    loc = loc_res.scalars().first()
+    if not loc:
+        loc = StockLocation(
+            shop_id=shop_id,
+            name="Main Store",
+            is_default=True,
+            is_active=True,
+        )
+        db.add(loc)
+        await db.flush()
+
+    p_q = select(Product).where(Product.shop_id == shop_id)
+    p_res = await db.execute(p_q)
+    prods = p_res.scalars().all()
+
+    reconciled = 0
+    for p in prods:
+        if p.track_stock and not p.default_location_id:
+            p.default_location_id = loc.id
+            reconciled += 1
+
+    await db.commit()
+    return {
+        "success": True,
+        "reconciledCount": reconciled,
+        "totalTracked": len(prods),
+    }
+
+
+
+@router.get("/locations")
+async def list_stock_locations_endpoint(
+    shop_id: Optional[uuid.UUID] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    if not shop_id:
+        return []
     from sqlalchemy import select, desc, asc
     from app.models.inventory import StockLocation
 

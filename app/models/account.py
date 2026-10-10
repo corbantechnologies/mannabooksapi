@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, date
 from typing import Optional
-from sqlalchemy import String, Boolean, DateTime, Date, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import String, Boolean, DateTime, Date, ForeignKey, Text, UniqueConstraint, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
@@ -14,7 +14,11 @@ class ChartOfAccount(Base):
     shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
     code: Mapped[str] = mapped_column(String(10), nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    account_type: Mapped[str] = mapped_column(String(30), nullable=False)  # ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE
+    account_type: Mapped[str] = mapped_column(
+        "account_type",
+        SQLEnum('ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'EXPENSE', name="account_type", create_type=False),
+        nullable=False,
+    )
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     parent_code: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

@@ -133,3 +133,13 @@ async def record_stock_adjustment(
     await db.commit()
     await db.refresh(ledger)
     return ledger
+
+
+async def delete_item(db: AsyncSession, shop_id: uuid.UUID, item_id: uuid.UUID) -> bool:
+    item = await get_item_by_id(db, shop_id, item_id)
+    if not item:
+        return False
+    await db.delete(item)
+    await db.commit()
+    return True
+

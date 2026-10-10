@@ -11,6 +11,7 @@ from sqlalchemy import (
     Integer,
     JSON,
     Numeric,
+    Enum as SQLEnum,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -63,7 +64,7 @@ class Shop(Base):
     is_gl_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     auto_stock_deduction_enabled: Mapped[bool] = mapped_column("auto_stock_deduction_enabled", Boolean, default=True, nullable=False)
     business_mode: Mapped[str] = mapped_column("business_mode", String(20), default="HYBRID", nullable=False)
-    loyalty_engine_mode: Mapped[str] = mapped_column("loyalty_engine_mode", String(30), default="OFF", nullable=False)
+    loyalty_engine_mode: Mapped[str] = mapped_column("loyalty_engine_mode", SQLEnum("OFF", "POINTS_ONLY", "TIERS_ONLY", "HYBRID", name="loyalty_engine_mode", create_type=False), default="OFF", nullable=False)
     primary_color: Mapped[str] = mapped_column(String(20), default="#000000", nullable=False)
     plan: Mapped[str] = mapped_column(String(30), default="FREE", nullable=False)
     subscription_status: Mapped[str] = mapped_column(String(30), default="ACTIVE", nullable=False)
@@ -126,9 +127,18 @@ class ShopMember(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    role: Mapped[str] = mapped_column(String(30), default="OPERATOR", nullable=False)
-    custom_permissions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    assigned_location_ids: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    role: Mapped[str] = mapped_column(
+        "role",
+        SQLEnum(
+            'OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'STOREKEEPER',
+            'CASHIER', 'DISPATCHER', 'SALES_REP', 'EMPLOYEE', 'VIEWER',
+            name="user_role", create_type=False
+        ),
+        default="EMPLOYEE",
+        nullable=False,
+    )
+    custom_permissions: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    assigned_location_ids: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     hide_cost_prices: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     direct_approval_limit: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -144,13 +154,27 @@ class ShopInvitation(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
     email: Mapped[str] = mapped_column(Text, nullable=False)
-    role: Mapped[str] = mapped_column(String(30), default="EMPLOYEE", nullable=False)
+    role: Mapped[str] = mapped_column(
+        "role",
+        SQLEnum(
+            'OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'STOREKEEPER',
+            'CASHIER', 'DISPATCHER', 'SALES_REP', 'EMPLOYEE', 'VIEWER',
+            name="user_role", create_type=False
+        ),
+        default="EMPLOYEE",
+        nullable=False,
+    )
     custom_permissions: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     assigned_location_ids: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     hide_cost_prices: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     direct_approval_limit: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    status: Mapped[str] = mapped_column(String(30), default="PENDING", nullable=False)
+    status: Mapped[str] = mapped_column(
+        "status",
+        SQLEnum('PENDING', 'ACCEPTED', 'REVOKED', name="invitation_status", create_type=False),
+        default="PENDING",
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     shop: Mapped["Shop"] = relationship("Shop", lazy="selectin")

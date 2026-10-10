@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 from decimal import Decimal
-from sqlalchemy import String, Boolean, DateTime, ForeignKey, Numeric
+from sqlalchemy import String, Boolean, DateTime, ForeignKey, Numeric, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
@@ -18,7 +18,12 @@ class Product(Base):
     item_type: Mapped[str] = mapped_column(String(20), default="PRODUCT", nullable=False)  # 'PRODUCT' | 'SERVICE'
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     cost_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
-    default_tax_type: Mapped[str] = mapped_column(String(20), default="V_16", nullable=False)  # 'V_16', 'V_0', 'EXEMPT'
+    default_tax_type: Mapped[str] = mapped_column(
+        "default_tax_type",
+        SQLEnum("V_16", "V_0", "EXEMPT", name="tax_type", create_type=False),
+        default="V_16",
+        nullable=False,
+    )
     track_stock: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     stock_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     reorder_threshold: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("5.00"), nullable=False)

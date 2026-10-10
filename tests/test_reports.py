@@ -174,7 +174,7 @@ async def test_financial_reporting_wave_e_lifecycle():
             shop_id=test_shop_id,
             product_id=product_id,
             location_id=location_id,
-            movement_type="INFLOW",
+            movement_type="PURCHASE_RECEIPT",
             quantity=Decimal("50.00"),
             unit_cost=Decimal("10000.00"),
             notes="Initial Batch Received",

@@ -13,9 +13,14 @@ async def verify_internal_api_key(
     db: AsyncSession = Depends(get_db),
 ):
     """Ensure internal communication originates from Next.js BFF or an authenticated user session."""
-    # 1. Valid internal secret
-    if x_internal_key and x_internal_key == settings.INTERNAL_API_KEY:
-        return True
+    # 1. If explicit internal key provided, validate it strictly
+    if x_internal_key is not None:
+        if x_internal_key == settings.INTERNAL_API_KEY:
+            return True
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid internal authorization secret.",
+        )
 
     # 2. Valid user session bearer token
     if authorization and authorization.lower().startswith("bearer "):
@@ -25,13 +30,13 @@ async def verify_internal_api_key(
         if user:
             return True
 
-    # 3. Development / Staging fallback if caller didn't configure key
+    # 3. Development fallback if key not passed at all
     if not settings.is_production:
         return True
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid internal authorization secret or session token.",
+        detail="Missing or invalid internal authorization secret.",
     )
 
 

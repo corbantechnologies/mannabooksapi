@@ -11,6 +11,7 @@ from sqlalchemy import (
     Text,
     Integer,
     UniqueConstraint,
+    Enum as SQLEnum,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -24,9 +25,30 @@ class Document(Base):
     shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
     client_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("clients.id"), nullable=True)
     supplier_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=True)
-    type: Mapped[str] = mapped_column(String(50), nullable=False)  # INVOICE, CREDIT_NOTE, RECEIPT, QUOTE, LPO, DELIVERY_NOTE, PAYMENT_VOUCHER
+    type: Mapped[str] = mapped_column(
+        "type",
+        SQLEnum(
+            "QUOTATION", "INVOICE", "RECEIPT", "LPO", "PO", "LSO",
+            "DELIVERY_NOTE", "CREDIT_NOTE", "DEBIT_NOTE",
+            "GOODS_RECEIVED_NOTE", "SERVICE_COMPLETION_NOTE",
+            "PAYMENT_VOUCHER", "PAYROLL_VOUCHER",
+            name="doc_type",
+            create_type=False,
+        ),
+        nullable=False,
+    )
     doc_number: Mapped[str] = mapped_column("doc_number", String(50), nullable=False)
-    status: Mapped[str] = mapped_column(String(30), default="DRAFT", nullable=False)  # DRAFT, ISSUED, PAID, PARTIAL, CANCELLED
+    status: Mapped[str] = mapped_column(
+        "status",
+        SQLEnum(
+            "DRAFT", "ISSUED", "OVERDUE", "PAID", "PARTIALLY_PAID",
+            "RECEIVED", "CANCELLED", "CONFIRMED",
+            name="doc_status",
+            create_type=False,
+        ),
+        default="DRAFT",
+        nullable=False,
+    )
 
     # Statutory KRA eTIMS & Lineage Fields
     kra_cu_invoice_number: Mapped[Optional[str]] = mapped_column("kra_cu_invoice_number", String(100), nullable=True)
@@ -37,6 +59,16 @@ class Document(Base):
 
     payment_channel: Mapped[Optional[str]] = mapped_column("payment_channel", String(50), nullable=True)
     payment_reference: Mapped[Optional[str]] = mapped_column("payment_reference", String(100), nullable=True)
+
+    # Attachments Proof
+    attachment_url: Mapped[Optional[str]] = mapped_column("attachment_url", Text, nullable=True)
+    attachment_name: Mapped[Optional[str]] = mapped_column("attachment_name", String(255), nullable=True)
+    attachment_size: Mapped[Optional[int]] = mapped_column("attachment_size", Integer, nullable=True)
+
+    # Email Delivery Tracking
+    resend_email_id: Mapped[Optional[str]] = mapped_column("resend_email_id", String(100), nullable=True)
+    email_delivery_status: Mapped[str] = mapped_column("email_delivery_status", String(50), default="NOT_SENT", nullable=False)
+    last_email_opened_at: Mapped[Optional[datetime]] = mapped_column("last_email_opened_at", DateTime, nullable=True)
 
     # Multi-currency and Financial Metrics
     currency: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
@@ -52,7 +84,11 @@ class Document(Base):
 
     # Recurring Invoicing
     is_recurring: Mapped[bool] = mapped_column("is_recurring", Boolean, default=False, nullable=False)
-    recurring_interval: Mapped[Optional[str]] = mapped_column("recurring_interval", String(20), nullable=True)
+    recurring_interval: Mapped[Optional[str]] = mapped_column(
+        "recurring_interval",
+        SQLEnum('WEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY', name="recurring_interval", create_type=False),
+        nullable=True,
+    )
     next_recurring_date: Mapped[Optional[datetime]] = mapped_column("next_recurring_date", DateTime, nullable=True)
 
     location_id: Mapped[Optional[uuid.UUID]] = mapped_column("location_id", UUID(as_uuid=True), nullable=True)
@@ -62,6 +98,8 @@ class Document(Base):
     items: Mapped[List["DocumentItem"]] = relationship("DocumentItem", back_populates="document", cascade="all, delete-orphan", lazy="selectin")
     client = relationship("Client", lazy="selectin")
     supplier = relationship("Supplier", lazy="selectin")
+    token_record = relationship("DocumentToken", lazy="selectin", uselist=False)
+    notes_list: Mapped[List["DocumentNote"]] = relationship("DocumentNote", back_populates="document", cascade="all, delete-orphan", lazy="selectin", order_by="desc(DocumentNote.created_at)")
 
     __table_args__ = (
         UniqueConstraint("shop_id", "doc_number", "type", name="unique_shop_doc_number"),
@@ -78,7 +116,12 @@ class DocumentItem(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     unit_price: Mapped[Decimal] = mapped_column("unit_price", Numeric(12, 2), nullable=False)
-    tax_type: Mapped[str] = mapped_column("tax_type", String(20), default="V_16", nullable=False)
+    tax_type: Mapped[str] = mapped_column(
+        "tax_type",
+        SQLEnum("V_16", "V_0", "EXEMPT", name="tax_type", create_type=False),
+        default="V_16",
+        nullable=False,
+    )
     tax_amount: Mapped[Decimal] = mapped_column("tax_amount", Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     item_total: Mapped[Decimal] = mapped_column("item_total", Numeric(12, 2), nullable=False)
 
@@ -94,3 +137,16 @@ class DocumentToken(Base):
     token: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
+
+class DocumentNote(Base):
+    __tablename__ = "document_notes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column("document_id", UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    shop_id: Mapped[uuid.UUID] = mapped_column("shop_id", UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column("user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    note: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    document = relationship("Document", back_populates="notes_list")
+    user = relationship("User", lazy="selectin")

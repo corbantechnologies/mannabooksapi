@@ -39,6 +39,38 @@ class ToggleSuperAdminRequest(BaseModel):
     is_super_admin: bool
 
 
+class BootstrapAdminRequest(BaseModel):
+    email: str
+
+
+@router.post("/bootstrap")
+async def bootstrap_admin_endpoint(
+    req: BootstrapAdminRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    email = req.email.strip().lower()
+    q = select(User).where(func.lower(User.email) == email)
+    res = await db.execute(q)
+    user = res.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail=f"User '{email}' was not found in the database. Please sign up on MannaBooks first, then call this endpoint.",
+        )
+    user.is_super_admin = True
+    await db.commit()
+    return {
+        "success": True,
+        "message": f"Successfully elevated {user.name} ({user.email}) to Super Admin.",
+        "user": {
+            "id": str(user.id),
+            "email": user.email,
+            "name": user.name,
+            "isSuperAdmin": True,
+        },
+    }
+
+
 @router.get("/stats")
 async def get_platform_stats(db: AsyncSession = Depends(get_db)):
     """Global platform stats & telemetry for super admin overview."""
@@ -429,3 +461,149 @@ async def delete_user_account(user_id: uuid.UUID, db: AsyncSession = Depends(get
     await db.commit()
 
     return {"success": True, "message": f"Account {user.email} and all associated workspaces permanently deleted."}
+
+
+DEFAULT_PLANS = {
+    "FREE": {
+        "id": "FREE",
+        "name": "Free Starter",
+        "tagline": "Essential walk-in invoicing & POS for sole operators",
+        "priceKesMonthly": 0,
+        "priceKesAnnually": 0,
+        "annualDiscountPercent": 0,
+        "maxMembers": 1,
+        "maxLocations": 1,
+        "canTransferStock": False,
+        "hasGeneralLedger": False,
+        "hasReconciliation": False,
+        "hasStatutoryPayroll": False,
+        "hasApiAccess": False,
+        "badge": None,
+        "isHighlighted": False,
+        "features": [
+            "1 Workspace & 1 Team Member (Owner)",
+            "Single Stock Location (Main Store)",
+            "Standard Quotes, Invoices & Receipts",
+            "Walk-in POS & 58mm/80mm Thermal Receipt Slips",
+            "KRA eTIMS CU QR Verification",
+            "Client Statement of Account Ledgers",
+        ],
+    },
+    "BASIC": {
+        "id": "BASIC",
+        "name": "Basic",
+        "tagline": "Team collaboration & multi-node stock for growing retail shops",
+        "priceKesMonthly": 1500,
+        "priceKesAnnually": 14400,
+        "annualDiscountPercent": 20,
+        "maxMembers": 3,
+        "maxLocations": 3,
+        "canTransferStock": True,
+        "hasGeneralLedger": False,
+        "hasReconciliation": False,
+        "hasStatutoryPayroll": True,
+        "hasApiAccess": False,
+        "badge": None,
+        "isHighlighted": False,
+        "features": [
+            "Everything in Free Starter",
+            "Up to 3 Team Members with Granular Roles",
+            "Up to 3 Stock Locations (Main, Backroom, Branch)",
+            "Inter-Branch Stock Transfers with Audit Logs",
+            "Statutory Payroll (PAYE, SHIF, Housing Levy, NSSF)",
+            "Expense & Operational Cost Tracking",
+            "Tax Wear & Tear and VAT Return Trackers",
+        ],
+    },
+    "PRO": {
+        "id": "PRO",
+        "name": "Professional",
+        "tagline": "Full double-entry general ledger & unlimited warehouse inventory",
+        "priceKesMonthly": 3500,
+        "priceKesAnnually": 33600,
+        "annualDiscountPercent": 20,
+        "maxMembers": 10,
+        "maxLocations": -1,
+        "canTransferStock": True,
+        "hasGeneralLedger": True,
+        "hasReconciliation": True,
+        "hasStatutoryPayroll": True,
+        "hasApiAccess": False,
+        "badge": "Most Popular",
+        "isHighlighted": True,
+        "features": [
+            "Everything in Basic",
+            "Up to 10 Team Members across Workspaces",
+            "CRM Deals Pipeline & Visual Kanban Board",
+            "Tiered Proposals with Client e-Signatures",
+            "Retainer Contracts, SLAs & Project Workspaces",
+            "Full Double-Entry General Ledger (GL)",
+            "Balance Sheet & Real-time Trial Balance / P&L",
+            "Bank & M-Pesa Cash Account Reconciliation Tool",
+            "FIFO Inventory Asset Valuation Engine",
+            "Multi-Currency Transaction Ledgers",
+        ],
+    },
+    "ENTERPRISE": {
+        "id": "ENTERPRISE",
+        "name": "Enterprise",
+        "tagline": "Unlimited high-volume capacity & custom integrations",
+        "priceKesMonthly": 10000,
+        "priceKesAnnually": 96000,
+        "annualDiscountPercent": 20,
+        "maxMembers": -1,
+        "maxLocations": -1,
+        "canTransferStock": True,
+        "hasGeneralLedger": True,
+        "hasReconciliation": True,
+        "hasStatutoryPayroll": True,
+        "hasApiAccess": True,
+        "badge": "Custom SLA",
+        "isHighlighted": False,
+        "features": [
+            "Everything in Professional",
+            "Unlimited Team Members & Locations",
+            "Dedicated Support & Custom SLAs",
+            "Automated Offsite Backup Snapshots",
+        ],
+    },
+}
+
+_active_plans = dict(DEFAULT_PLANS)
+
+
+@router.get("/pricing/plans")
+async def get_admin_pricing_plans():
+    return {"success": True, "plans": list(_active_plans.values())}
+
+
+@router.post("/pricing/plans")
+async def create_admin_pricing_plan(req: dict):
+    plan_id = (req.get("id") or "").upper().strip()
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="Plan ID required")
+    _active_plans[plan_id] = req
+    return {"success": True, "message": f"Plan {plan_id} created successfully.", "plan": req}
+
+
+@router.put("/pricing/plans/{plan_id}")
+async def update_admin_pricing_plan(plan_id: str, req: dict):
+    plan_id = plan_id.upper().strip()
+    _active_plans[plan_id] = req
+    return {"success": True, "message": f"Plan {plan_id} updated successfully.", "plan": req}
+
+
+@router.delete("/pricing/plans/{plan_id}")
+async def delete_admin_pricing_plan(plan_id: str):
+    plan_id = plan_id.upper().strip()
+    if plan_id in _active_plans:
+        del _active_plans[plan_id]
+    return {"success": True, "message": f"Plan {plan_id} deleted."}
+
+
+@router.post("/pricing/reset")
+async def reset_admin_pricing_plans():
+    global _active_plans
+    _active_plans = dict(DEFAULT_PLANS)
+    return {"success": True, "message": "Plans reset to default tiers."}
+

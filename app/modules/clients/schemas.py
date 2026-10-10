@@ -5,20 +5,20 @@ from pydantic import BaseModel, EmailStr, Field, ConfigDict
 
 
 class ClientCreateRequest(BaseModel):
-    name: str = Field(..., min_length=2, max_length=255)
-    email: EmailStr
+    name: str = Field(..., min_length=1, max_length=255)
+    email: Optional[str] = ""
     phone: Optional[str] = None
     client_type: str = "WALK_IN"  # WALK_IN, CORPORATE, INDIVIDUAL
-    tax_pin: Optional[str] = Field(None, pattern=r"^[A-Z0-9]{11}$")
+    tax_pin: Optional[str] = None
     requires_etims: bool = False
 
 
 class ClientUpdateRequest(BaseModel):
-    name: Optional[str] = Field(None, min_length=2, max_length=255)
-    email: Optional[EmailStr] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    email: Optional[str] = None
     phone: Optional[str] = None
     client_type: Optional[str] = None
-    tax_pin: Optional[str] = Field(None, pattern=r"^[A-Z0-9]{11}$")
+    tax_pin: Optional[str] = None
     requires_etims: Optional[bool] = None
 
 

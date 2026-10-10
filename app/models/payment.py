@@ -11,7 +11,7 @@ from sqlalchemy import (
     Boolean,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 
@@ -28,6 +28,8 @@ class DocumentPayment(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     recorded_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column("recorded_by_user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
+
+    recorded_by = relationship("User", lazy="selectin", foreign_keys=[recorded_by_user_id])
 
 
 class PaymentMethod(Base):

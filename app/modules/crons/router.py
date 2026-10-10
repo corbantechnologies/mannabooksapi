@@ -74,3 +74,40 @@ async def etims_retry_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to trigger eTIMS retry daemon: {str(e)}",
         )
+
+
+@router.post("/subscription-lifecycle")
+async def subscription_lifecycle_endpoint(
+    db: AsyncSession = Depends(get_db),
+):
+    from datetime import datetime
+    from sqlalchemy import select, and_
+    from app.models.identity import Shop, User
+
+    now = datetime.utcnow()
+    # Find shops whose subscription expired
+    q = select(Shop).where(
+        and_(
+            Shop.subscription_expires_at.isnot(None),
+            Shop.subscription_expires_at < now,
+            Shop.subscription_status == "ACTIVE",
+            Shop.is_lifetime_pro == False,
+        )
+    )
+    res = await db.execute(q)
+    expired_shops = res.scalars().all()
+
+    soft_locks_executed = 0
+    for shop in expired_shops:
+        shop.subscription_status = "EXPIRED"
+        soft_locks_executed += 1
+
+    await db.commit()
+    return {
+        "success": True,
+        "preRenewalAlertsSent": 0,
+        "renewalStkPromptsTriggered": 0,
+        "gracePeriodsEntered": 0,
+        "softLocksExecuted": soft_locks_executed,
+    }
+

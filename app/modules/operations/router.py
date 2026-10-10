@@ -345,6 +345,54 @@ async def update_loyalty_program(
     return {"success": True, "program": prog}
 
 
+class CreateTierRequest(BaseModel):
+    shop_id: str
+    name: str
+    min_points: int = 0
+    discount_percentage: Decimal = Decimal("0.00")
+    perks_description: Optional[str] = None
+    display_order: int = 0
+
+
+@router.post("/operations/loyalty/tiers")
+async def create_loyalty_tier(req: CreateTierRequest, db: AsyncSession = Depends(get_db)):
+    tier = MembershipTier(
+        shop_id=uuid.UUID(req.shop_id),
+        name=req.name,
+        min_points=req.min_points,
+        discount_percentage=req.discount_percentage,
+        perks_description=req.perks_description,
+        display_order=req.display_order,
+    )
+    db.add(tier)
+    await db.commit()
+    await db.refresh(tier)
+    return {
+        "success": True,
+        "data": {
+            "id": str(tier.id),
+            "name": tier.name,
+            "minSpendKes": str(tier.min_points),
+            "discountPercent": str(tier.discount_percentage),
+            "pointsMultiplier": "1.0",
+            "badgeColor": "#000000",
+            "displayOrder": tier.display_order,
+        }
+    }
+
+
+@router.delete("/operations/loyalty/tiers/{tier_id}")
+async def delete_loyalty_tier(tier_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    q = select(MembershipTier).where(MembershipTier.id == tier_id)
+    res = await db.execute(q)
+    tier = res.scalar_one_or_none()
+    if not tier:
+        raise HTTPException(status_code=404, detail="Tier not found")
+    await db.delete(tier)
+    await db.commit()
+    return {"success": True}
+
+
 @router.post("/operations/loyalty/adjust")
 async def adjust_loyalty_points(
     req: AdjustLoyaltyPointsRequest,
@@ -400,6 +448,119 @@ async def adjust_loyalty_points(
     return {"success": True, "currentPoints": new_balance}
 
 
+class PhoneLoyaltyRequest(BaseModel):
+    shop_id: str
+    phone: str
+    customer_name: Optional[str] = None
+
+
+@router.get("/operations/loyalty/account")
+async def get_client_loyalty_account_endpoint(
+    shop_id: uuid.UUID = Query(...),
+    client_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    q_acc = select(ClientLoyaltyAccount).where(
+        ClientLoyaltyAccount.shop_id == shop_id,
+        ClientLoyaltyAccount.client_id == client_id,
+    )
+    res_acc = await db.execute(q_acc)
+    acc = res_acc.scalar_one_or_none()
+    if not acc:
+        acc = ClientLoyaltyAccount(
+            shop_id=shop_id,
+            client_id=client_id,
+            member_number=f"MEM-{secrets.token_hex(3).upper()}",
+            current_points=0,
+            lifetime_points_earned=0,
+            lifetime_points_redeemed=0,
+            wallet_balance_kes=Decimal("0.00"),
+        )
+        db.add(acc)
+        await db.commit()
+        await db.refresh(acc)
+
+    return {
+        "success": True,
+        "data": {
+            "id": str(acc.id),
+            "memberNumber": acc.member_number,
+            "currentPoints": acc.current_points,
+            "walletBalanceKes": str(acc.wallet_balance_kes or "0.00"),
+        }
+    }
+
+
+@router.post("/operations/loyalty/account/by-phone")
+async def find_or_create_loyalty_account_by_phone_endpoint(
+    req: PhoneLoyaltyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    import re
+    clean = re.sub(r"\s+", "", req.phone.strip())
+    try:
+        s_uuid = uuid.UUID(req.shop_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid shop ID")
+
+    from app.models.client import Client
+    q_c = select(Client).where(Client.shop_id == s_uuid, Client.phone == clean)
+    client = (await db.execute(q_c)).scalar_one_or_none()
+
+    if not client:
+        name = req.customer_name or f"Customer {clean[-4:]}"
+        client = Client(
+            shop_id=s_uuid,
+            name=name,
+            phone=clean,
+            email="",
+            client_type="WALK_IN",
+            requires_etims=False,
+        )
+        db.add(client)
+        await db.flush()
+
+    q_acc = select(ClientLoyaltyAccount).where(
+        ClientLoyaltyAccount.shop_id == s_uuid,
+        ClientLoyaltyAccount.client_id == client.id,
+    )
+    acc = (await db.execute(q_acc)).scalar_one_or_none()
+    if not acc:
+        acc = ClientLoyaltyAccount(
+            shop_id=s_uuid,
+            client_id=client.id,
+            member_number=f"MEM-{secrets.token_hex(3).upper()}",
+            current_points=0,
+            lifetime_points_earned=0,
+            lifetime_points_redeemed=0,
+            wallet_balance_kes=Decimal("0.00"),
+        )
+        db.add(acc)
+        await db.commit()
+        await db.refresh(acc)
+    else:
+        await db.commit()
+
+    return {
+        "success": True,
+        "data": {
+            "client": {
+                "id": str(client.id),
+                "name": client.name,
+                "phone": client.phone,
+                "email": client.email,
+                "clientType": client.client_type,
+            },
+            "loyaltyAccount": {
+                "id": str(acc.id),
+                "memberNumber": acc.member_number,
+                "currentPoints": acc.current_points,
+                "walletBalanceKes": str(acc.wallet_balance_kes or "0.00"),
+            }
+        }
+    }
+
+
 # -------------------------------------------------------------------------
 # Expenses & Incomes Endpoints
 # -------------------------------------------------------------------------
@@ -417,6 +578,7 @@ class CreateExpenseRequest(BaseModel):
 
 
 @router.get("/expenses")
+@router.get("/operations/expenses")
 async def list_expenses(
     shop_id: uuid.UUID = Query(...),
     limit: int = Query(100, ge=1, le=500),
@@ -446,6 +608,7 @@ async def list_expenses(
 
 
 @router.post("/expenses")
+@router.post("/operations/expenses")
 async def create_expense_endpoint(req: CreateExpenseRequest, db: AsyncSession = Depends(get_db)):
     exp = Expense(
         shop_id=uuid.UUID(req.shop_id),
@@ -487,6 +650,7 @@ class CreateIncomeRequest(BaseModel):
 
 
 @router.get("/incomes")
+@router.get("/operations/incomes")
 async def list_incomes(
     shop_id: uuid.UUID = Query(...),
     limit: int = Query(100, ge=1, le=500),
@@ -515,6 +679,7 @@ async def list_incomes(
 
 
 @router.post("/incomes")
+@router.post("/operations/incomes")
 async def create_income_endpoint(req: CreateIncomeRequest, db: AsyncSession = Depends(get_db)):
     inc = Income(
         shop_id=uuid.UUID(req.shop_id),
@@ -540,4 +705,30 @@ async def create_income_endpoint(req: CreateIncomeRequest, db: AsyncSession = De
             "incomeDate": inc.income_date.isoformat(),
         }
     }
+
+
+@router.delete("/expenses/{expense_id}")
+@router.delete("/operations/expenses/{expense_id}")
+async def delete_expense_endpoint(expense_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    q = select(Expense).where(Expense.id == expense_id)
+    res = await db.execute(q)
+    exp = res.scalar_one_or_none()
+    if not exp:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    await db.delete(exp)
+    await db.commit()
+    return {"success": True}
+
+
+@router.delete("/incomes/{income_id}")
+@router.delete("/operations/incomes/{income_id}")
+async def delete_income_endpoint(income_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    q = select(Income).where(Income.id == income_id)
+    res = await db.execute(q)
+    inc = res.scalar_one_or_none()
+    if not inc:
+        raise HTTPException(status_code=404, detail="Income not found")
+    await db.delete(inc)
+    await db.commit()
+    return {"success": True}
 

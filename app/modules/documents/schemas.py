@@ -53,6 +53,35 @@ class DocumentStatusUpdateRequest(BaseModel):
     status: str
 
 
+class DocumentPatchRequest(BaseModel):
+    status: Optional[str] = None
+    kra_cu_invoice_number: Optional[str] = None
+    payment_channel: Optional[str] = None
+    payment_reference: Optional[str] = None
+    attachment_url: Optional[str] = None
+    attachment_name: Optional[str] = None
+    attachment_size: Optional[int] = None
+    notes: Optional[str] = None
+    terms_and_conditions: Optional[str] = None
+    due_date: Optional[datetime] = None
+    is_recurring: Optional[bool] = None
+    recurring_interval: Optional[str] = None
+    next_recurring_date: Optional[datetime] = None
+
+
+class DocumentNoteCreateRequest(BaseModel):
+    note: str = Field(..., min_length=1)
+
+
+class DocumentConvertRequest(BaseModel):
+    target_type: str
+
+
+class DocumentBulkStatusRequest(BaseModel):
+    document_ids: List[uuid.UUID]
+    new_status: str
+
+
 class DocumentItemResponse(BaseModel):
     id: uuid.UUID
     document_id: uuid.UUID
@@ -68,11 +97,23 @@ class DocumentItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PartySummary(BaseModel):
+    id: uuid.UUID
+    name: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    tax_pin: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class DocumentResponse(BaseModel):
     id: uuid.UUID
     shop_id: uuid.UUID
     client_id: Optional[uuid.UUID] = None
     supplier_id: Optional[uuid.UUID] = None
+    client: Optional[PartySummary] = None
+    supplier: Optional[PartySummary] = None
     type: str
     doc_number: str
     status: str
@@ -83,6 +124,14 @@ class DocumentResponse(BaseModel):
     terms_and_conditions: Optional[str] = None
     payment_channel: Optional[str] = None
     payment_reference: Optional[str] = None
+    attachment_url: Optional[str] = None
+    attachment_name: Optional[str] = None
+    attachment_size: Optional[int] = None
+    email_delivery_status: Optional[str] = "NOT_SENT"
+    last_email_opened_at: Optional[datetime] = None
+    is_recurring: Optional[bool] = False
+    recurring_interval: Optional[str] = None
+    next_recurring_date: Optional[datetime] = None
     currency: Optional[str] = "KES"
     sub_total: Decimal
     tax_amount: Decimal
@@ -94,3 +143,4 @@ class DocumentResponse(BaseModel):
     items: List[DocumentItemResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
+

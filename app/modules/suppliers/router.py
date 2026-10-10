@@ -53,3 +53,36 @@ async def update_supplier_endpoint(
     if not supplier:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Supplier not found")
     return supplier
+
+
+@router.delete("/{supplier_id}")
+async def delete_supplier_endpoint(
+    supplier_id: uuid.UUID,
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.modules.suppliers.service import delete_supplier
+    deleted = await delete_supplier(db, shop_id=shop_id, supplier_id=supplier_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Supplier not found")
+    return {"success": True, "message": "Supplier deleted successfully"}
+
+
+@router.get("/{supplier_id}/statement")
+async def get_supplier_statement_endpoint(
+    supplier_id: uuid.UUID,
+    shop_id: uuid.UUID = Query(...),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    from datetime import datetime
+    from app.modules.suppliers.service import get_supplier_statement
+    s_dt = datetime.fromisoformat(start_date) if start_date else None
+    e_dt = datetime.fromisoformat(end_date) if end_date else None
+    res = await get_supplier_statement(db, shop_id=shop_id, supplier_id=supplier_id, start_date=s_dt, end_date=e_dt)
+    if not res:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Supplier not found")
+    return res
+
+

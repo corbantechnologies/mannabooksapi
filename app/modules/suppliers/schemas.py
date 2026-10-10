@@ -6,20 +6,20 @@ from pydantic import BaseModel, EmailStr, Field, ConfigDict
 
 class SupplierCreateRequest(BaseModel):
     name: str = Field(..., min_length=2, max_length=255)
-    email: EmailStr
+    email: Optional[str] = None
     phone: Optional[str] = None
     supplier_type: str = "CORPORATE"
-    tax_pin: Optional[str] = Field(None, pattern=r"^[A-Z0-9]{11}$")
+    tax_pin: Optional[str] = None
     requires_etims: bool = False
     payment_terms: str = "NET_30"
 
 
 class SupplierUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=255)
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     phone: Optional[str] = None
     supplier_type: Optional[str] = None
-    tax_pin: Optional[str] = Field(None, pattern=r"^[A-Z0-9]{11}$")
+    tax_pin: Optional[str] = None
     requires_etims: Optional[bool] = None
     payment_terms: Optional[str] = None
 
@@ -28,7 +28,7 @@ class SupplierResponse(BaseModel):
     id: uuid.UUID
     shop_id: uuid.UUID
     name: str
-    email: str
+    email: Optional[str] = None
     phone: Optional[str] = None
     supplier_type: str
     tax_pin: Optional[str] = None
