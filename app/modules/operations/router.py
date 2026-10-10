@@ -18,6 +18,7 @@ from app.models.operations import (
     Stocktake, StocktakeItem, LoyaltyProgram, MembershipTier,
     ClientLoyaltyAccount, LoyaltyLedger
 )
+from app.models.expense import Expense, Income
 from app.modules.auth.service import verify_and_get_session
 
 router = APIRouter(tags=["Operations, Manufacturing, Budgets & Loyalty"])
@@ -397,3 +398,146 @@ async def adjust_loyalty_points(
     await db.commit()
 
     return {"success": True, "currentPoints": new_balance}
+
+
+# -------------------------------------------------------------------------
+# Expenses & Incomes Endpoints
+# -------------------------------------------------------------------------
+class CreateExpenseRequest(BaseModel):
+    shop_id: str
+    description: str
+    amount: Decimal
+    category: str = "OTHER"
+    expense_date: Optional[datetime] = None
+    currency: str = "KES"
+    payment_channel: Optional[str] = None
+    payment_reference: Optional[str] = None
+    receipt_url: Optional[str] = None
+    is_non_deductible: bool = False
+
+
+@router.get("/expenses")
+async def list_expenses(
+    shop_id: uuid.UUID = Query(...),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(Expense).where(Expense.shop_id == shop_id).order_by(desc(Expense.expense_date), desc(Expense.created_at)).limit(limit).offset(offset)
+    res = await db.execute(q)
+    expenses = res.scalars().all()
+    return [
+        {
+            "id": str(e.id),
+            "shopId": str(e.shop_id),
+            "description": e.description,
+            "amount": str(e.amount),
+            "currency": e.currency,
+            "category": e.category,
+            "expenseDate": e.expense_date.isoformat() if e.expense_date else None,
+            "paymentChannel": e.payment_channel,
+            "paymentReference": e.payment_reference,
+            "receiptUrl": e.receipt_url,
+            "isNonDeductible": e.is_non_deductible,
+            "createdAt": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in expenses
+    ]
+
+
+@router.post("/expenses")
+async def create_expense_endpoint(req: CreateExpenseRequest, db: AsyncSession = Depends(get_db)):
+    exp = Expense(
+        shop_id=uuid.UUID(req.shop_id),
+        description=req.description.strip(),
+        amount=req.amount,
+        category=req.category,
+        currency=req.currency,
+        expense_date=req.expense_date or datetime.utcnow(),
+        payment_channel=req.payment_channel,
+        payment_reference=req.payment_reference,
+        receipt_url=req.receipt_url,
+        is_non_deductible=req.is_non_deductible,
+    )
+    db.add(exp)
+    await db.commit()
+    return {
+        "success": True,
+        "expense": {
+            "id": str(exp.id),
+            "shopId": str(exp.shop_id),
+            "description": exp.description,
+            "amount": str(exp.amount),
+            "category": exp.category,
+            "expenseDate": exp.expense_date.isoformat(),
+        }
+    }
+
+
+class CreateIncomeRequest(BaseModel):
+    shop_id: str
+    description: str
+    amount: Decimal
+    category: str = "OTHER"
+    income_date: Optional[datetime] = None
+    currency: str = "KES"
+    payment_channel: Optional[str] = None
+    payment_reference: Optional[str] = None
+    attachment_url: Optional[str] = None
+
+
+@router.get("/incomes")
+async def list_incomes(
+    shop_id: uuid.UUID = Query(...),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(Income).where(Income.shop_id == shop_id).order_by(desc(Income.income_date), desc(Income.created_at)).limit(limit).offset(offset)
+    res = await db.execute(q)
+    incomes = res.scalars().all()
+    return [
+        {
+            "id": str(i.id),
+            "shopId": str(i.shop_id),
+            "description": i.description,
+            "amount": str(i.amount),
+            "currency": i.currency,
+            "category": i.category,
+            "incomeDate": i.income_date.isoformat() if i.income_date else None,
+            "paymentChannel": i.payment_channel,
+            "paymentReference": i.payment_reference,
+            "attachmentUrl": i.attachment_url,
+            "createdAt": i.created_at.isoformat() if i.created_at else None,
+        }
+        for i in incomes
+    ]
+
+
+@router.post("/incomes")
+async def create_income_endpoint(req: CreateIncomeRequest, db: AsyncSession = Depends(get_db)):
+    inc = Income(
+        shop_id=uuid.UUID(req.shop_id),
+        description=req.description.strip(),
+        amount=req.amount,
+        category=req.category,
+        currency=req.currency,
+        income_date=req.income_date or datetime.utcnow(),
+        payment_channel=req.payment_channel,
+        payment_reference=req.payment_reference,
+        attachment_url=req.attachment_url,
+    )
+    db.add(inc)
+    await db.commit()
+    return {
+        "success": True,
+        "income": {
+            "id": str(inc.id),
+            "shopId": str(inc.shop_id),
+            "description": inc.description,
+            "amount": str(inc.amount),
+            "category": inc.category,
+            "incomeDate": inc.income_date.isoformat(),
+        }
+    }
+

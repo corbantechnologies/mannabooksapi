@@ -1382,3 +1382,50 @@ async def get_shop_billing_overview(
         "availablePlans": available_plans,
         "transactions": transactions,
     }
+
+
+@router.get("/{shop_id}/members")
+async def list_shop_members(shop_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    q = select(ShopMember).options(selectinload(ShopMember.user)).where(ShopMember.shop_id == shop_id).order_by(desc(ShopMember.created_at))
+    members = (await db.execute(q)).scalars().all()
+    return [
+        {
+            "id": str(m.id),
+            "shopId": str(m.shop_id),
+            "userId": str(m.user_id),
+            "role": m.role,
+            "customPermissions": m.custom_permissions or "{}",
+            "assignedLocationIds": m.assigned_location_ids or [],
+            "hideCostPrices": m.hide_cost_prices,
+            "directApprovalLimit": str(m.direct_approval_limit),
+            "isActive": m.is_active,
+            "createdAt": m.created_at.isoformat() if m.created_at else None,
+            "user": {
+                "id": str(m.user.id),
+                "name": m.user.name,
+                "email": m.user.email,
+            } if m.user else None,
+        }
+        for m in members
+    ]
+
+
+@router.get("/{shop_id}/invitations")
+async def list_shop_invitations(shop_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    from app.models.identity import ShopInvitation
+    q = select(ShopInvitation).where(ShopInvitation.shop_id == shop_id).order_by(desc(ShopInvitation.created_at))
+    invites = (await db.execute(q)).scalars().all()
+    return [
+        {
+            "id": str(inv.id),
+            "shopId": str(inv.shop_id),
+            "email": inv.email,
+            "role": inv.role,
+            "status": inv.status,
+            "token": inv.token,
+            "createdAt": inv.created_at.isoformat() if inv.created_at else None,
+            "expiresAt": inv.expires_at.isoformat() if inv.expires_at else None,
+        }
+        for inv in invites
+    ]
+
