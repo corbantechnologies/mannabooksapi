@@ -82,7 +82,10 @@ def normalize_doc_status(status: Optional[str]) -> str:
 
 
 async def generate_doc_number(db: AsyncSession, shop_id: uuid.UUID, doc_type: str) -> str:
-    """Generates consecutive prefix-based document numbers (e.g. INV-0001, CN-0001)."""
+    """
+    Generates professional randomized document numbers in the format:
+    {shop_code}-{DOC}-{random_6_chr} (e.g. OI1BJ-QT-X7B2D9, OI1BJ-INV-9M4K2A).
+    """
     canonical_type = normalize_doc_type(doc_type)
     prefix_map = {
         "INVOICE": "INV",
@@ -100,10 +103,29 @@ async def generate_doc_number(db: AsyncSession, shop_id: uuid.UUID, doc_type: st
         "PAYROLL_VOUCHER": "PRV",
     }
     prefix = prefix_map.get(canonical_type, prefix_map.get(doc_type, "DOC"))
-    q = select(func.count(Document.id)).where(and_(Document.shop_id == shop_id, Document.type == canonical_type))
-    res = await db.execute(q)
-    count = (res.scalar() or 0) + 1
-    return f"{prefix}-{count:04d}"
+
+    from app.models.identity import Shop
+    q_shop = select(Shop.code, Shop.slug).where(Shop.id == shop_id)
+    res_shop = await db.execute(q_shop)
+    shop_row = res_shop.first()
+
+    shop_code = None
+    if shop_row:
+        shop_code = shop_row[0] or (shop_row[1][:5].upper() if shop_row[1] else None)
+    if not shop_code:
+        shop_code = "MBK"
+    shop_code = str(shop_code).strip().upper()
+
+    chars = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+    for _ in range(20):
+        rand_suffix = "".join(secrets.choice(chars) for _ in range(6))
+        candidate = f"{shop_code}-{prefix}-{rand_suffix}"
+        q_exists = select(Document.id).where(and_(Document.shop_id == shop_id, Document.doc_number == candidate))
+        exists = (await db.execute(q_exists)).scalar_one_or_none()
+        if not exists:
+            return candidate
+
+    return f"{shop_code}-{prefix}-{secrets.token_hex(3).upper()}"
 
 
 async def list_documents(
@@ -494,7 +516,7 @@ async def convert_document(
     db.add(tok)
 
     if source_doc.type == "QUOTATION" and target_type == "INVOICE":
-        source_doc.status = "ISSUED"
+        source_doc.status = "CONFIRMED"
     elif source_doc.type == "INVOICE" and target_type == "RECEIPT":
         source_doc.status = "PAID"
 
@@ -504,6 +526,15 @@ async def convert_document(
         "new_document_id": str(new_doc.id),
         "doc_number": new_doc.doc_number,
         "serial": new_doc.doc_number,
+        "newDocumentId": str(new_doc.id),
+        "docNumber": new_doc.doc_number,
+        "document": {
+            "id": str(new_doc.id),
+            "docNumber": new_doc.doc_number,
+            "type": new_doc.type,
+            "status": new_doc.status,
+            "grandTotal": str(new_doc.grand_total),
+        },
     }
 
 
@@ -553,13 +584,35 @@ async def get_document_full_detail(
         .where(and_(Document.parent_document_id == doc.id, Document.shop_id == shop_id))
         .order_by(Document.created_at.asc())
     )
-    children_res = (await db.execute(q_children)).scalars().all()
+    children_res = list((await db.execute(q_children)).scalars().all())
+
+    # Self-healing: If a quotation was accepted or confirmed by the client but child invoice is missing, generate it now
+    if (
+        doc.type == "QUOTATION"
+        and (doc.status == "CONFIRMED" or doc.client_portal_response == "ACCEPTED")
+        and not any(c.type == "INVOICE" for c in children_res)
+    ):
+        try:
+            await convert_document(db, shop_id=shop_id, document_id=doc.id, target_type="INVOICE")
+            doc.status = "CONFIRMED"
+            await db.commit()
+            q_children_re = (
+                select(Document)
+                .where(and_(Document.parent_document_id == doc.id, Document.shop_id == shop_id))
+                .order_by(Document.created_at.asc())
+            )
+            children_res = list((await db.execute(q_children_re)).scalars().all())
+        except Exception:
+            pass
+
     child_docs = [
         {
             "id": str(c.id),
             "docNumber": c.doc_number,
             "type": c.type,
             "status": c.status,
+            "grandTotal": str(c.grand_total or "0.00"),
+            "issueDate": c.issue_date.isoformat() if c.issue_date else None,
         }
         for c in children_res
     ]

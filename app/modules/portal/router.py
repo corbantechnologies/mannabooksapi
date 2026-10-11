@@ -126,8 +126,39 @@ async def portal_accept_quotation(
 
     doc.client_portal_response = "ACCEPTED"
     doc.status = "CONFIRMED"
+
+    # Automatically generate child invoice from accepted quotation
+    from app.modules.documents.service import convert_document
+    q_existing = select(Document).where(
+        and_(
+            Document.parent_document_id == doc.id,
+            Document.type == "INVOICE",
+            Document.shop_id == doc.shop_id,
+        )
+    )
+    existing_inv = (await db.execute(q_existing)).scalar_one_or_none()
+
+    invoice_info = None
+    if not existing_inv:
+        invoice_info = await convert_document(db, shop_id=doc.shop_id, document_id=doc.id, target_type="INVOICE")
+        doc.status = "CONFIRMED"
+    else:
+        invoice_info = {
+            "new_document_id": str(existing_inv.id),
+            "doc_number": existing_inv.doc_number,
+            "serial": existing_inv.doc_number,
+            "newDocumentId": str(existing_inv.id),
+            "docNumber": existing_inv.doc_number,
+        }
+
     await db.commit()
-    return {"success": True, "message": "Quotation accepted successfully"}
+    return {
+        "success": True,
+        "message": "Quotation accepted and invoice generated successfully",
+        "invoice": invoice_info,
+        "newDocumentId": invoice_info.get("new_document_id"),
+        "docNumber": invoice_info.get("doc_number"),
+    }
 
 
 @router.post("/quotations/{token}/amendment")
