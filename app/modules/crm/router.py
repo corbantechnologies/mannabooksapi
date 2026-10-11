@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status, Request, Cookie
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc, func
+from sqlalchemy import select, and_, desc, func, delete
 
 from app.db.session import get_db
 from app.core.config import get_settings
@@ -77,14 +77,17 @@ class UpdateDealRequest(BaseModel):
 
 
 class CreateProposalItemRequest(BaseModel):
+    id: Optional[str] = None
     product_id: Optional[str] = None
+    package_label: Optional[str] = None
     description: str
+    notes: Optional[str] = None
     quantity: Decimal = Decimal("1.0000")
     unit_price: Decimal = Decimal("0.00")
     discount_amount: Decimal = Decimal("0.00")
-    tax_type: str = "EXEMPT"
-    tax_amount: Decimal = Decimal("0.00")
-    item_total: Decimal = Decimal("0.00")
+    tax_type: Optional[str] = "EXEMPT"
+    tax_amount: Optional[Decimal] = Decimal("0.00")
+    item_total: Optional[Decimal] = None
 
 
 class CreateProposalRequest(BaseModel):
@@ -97,6 +100,23 @@ class CreateProposalRequest(BaseModel):
     valid_until: Optional[str] = None
     notes: Optional[str] = None
     terms_and_conditions: Optional[str] = None
+    executive_summary: Optional[str] = None
+    scope_of_work: Optional[str] = None
+
+
+class UpdateProposalRequest(BaseModel):
+    shop_id: Optional[str] = None
+    deal_id: Optional[str] = None
+    client_id: Optional[str] = None
+    title: Optional[str] = None
+    currency: Optional[str] = None
+    status: Optional[str] = None
+    valid_until: Optional[str] = None
+    notes: Optional[str] = None
+    executive_summary: Optional[str] = None
+    scope_of_work: Optional[str] = None
+    terms_and_conditions: Optional[str] = None
+    items: Optional[List[CreateProposalItemRequest]] = None
 
 
 class CreateContractRequest(BaseModel):
@@ -297,10 +317,46 @@ async def list_proposals(
     if not sid:
         return {"success": True, "proposals": []}
 
-    q = select(Proposal).where(Proposal.shop_id == sid).order_by(desc(Proposal.created_at))
+    q = (
+        select(Proposal, Client)
+        .outerjoin(Client, Proposal.client_id == Client.id)
+        .where(Proposal.shop_id == sid)
+        .order_by(desc(Proposal.created_at))
+    )
     res = await db.execute(q)
-    proposals = res.scalars().all()
-    return {"success": True, "proposals": proposals}
+    proposals_list = []
+    for prop, client in res.all():
+        proposals_list.append({
+            "id": str(prop.id),
+            "shop_id": str(prop.shop_id),
+            "shopId": str(prop.shop_id),
+            "deal_id": str(prop.deal_id) if prop.deal_id else None,
+            "dealId": str(prop.deal_id) if prop.deal_id else None,
+            "client_id": str(prop.client_id) if prop.client_id else None,
+            "clientId": str(prop.client_id) if prop.client_id else None,
+            "proposal_number": prop.proposal_number,
+            "proposalNumber": prop.proposal_number,
+            "title": prop.title,
+            "status": prop.status,
+            "currency": prop.currency,
+            "subtotal": float(prop.subtotal),
+            "grand_total": float(prop.subtotal),
+            "grandTotal": float(prop.subtotal),
+            "valid_until": prop.valid_until.isoformat() if prop.valid_until else None,
+            "validUntil": prop.valid_until.isoformat() if prop.valid_until else None,
+            "created_at": prop.created_at.isoformat() if prop.created_at else None,
+            "createdAt": prop.created_at.isoformat() if prop.created_at else None,
+            "view_count": prop.view_count,
+            "viewCount": prop.view_count,
+            "client_name": client.name if client else None,
+            "clientName": client.name if client else None,
+            "client": {
+                "id": str(client.id),
+                "name": client.name,
+                "email": client.email,
+            } if client else None,
+        })
+    return {"success": True, "proposals": proposals_list}
 
 
 @router.get("/crm/proposals/{proposal_id}")
@@ -312,14 +368,87 @@ async def get_proposal(
     prop = await db.get(Proposal, proposal_id)
     if not prop:
         raise HTTPException(status_code=404, detail="Proposal not found")
-    
+
     items_q = select(ProposalItem).where(ProposalItem.proposal_id == proposal_id).order_by(ProposalItem.display_order)
     items = (await db.execute(items_q)).scalars().all()
 
     token_q = select(ProposalToken.token).where(ProposalToken.proposal_id == proposal_id)
     token = (await db.execute(token_q)).scalar_one_or_none()
 
-    return {"success": True, "proposal": prop, "items": items, "publicToken": token}
+    client = await db.get(Client, prop.client_id) if prop.client_id else None
+    deal = await db.get(Deal, prop.deal_id) if prop.deal_id else None
+
+    serialized_items = [
+        {
+            "id": str(it.id),
+            "proposalId": str(it.proposal_id),
+            "proposal_id": str(it.proposal_id),
+            "packageLabel": it.package_label,
+            "package_label": it.package_label,
+            "description": it.description,
+            "notes": it.notes,
+            "quantity": float(it.quantity),
+            "unitPrice": float(it.unit_price),
+            "unit_price": float(it.unit_price),
+            "itemTotal": float(it.item_total),
+            "item_total": float(it.item_total),
+            "displayOrder": it.display_order,
+            "display_order": it.display_order,
+        }
+        for it in items
+    ]
+
+    proposal_data = {
+        "id": str(prop.id),
+        "shopId": str(prop.shop_id),
+        "shop_id": str(prop.shop_id),
+        "dealId": str(prop.deal_id) if prop.deal_id else None,
+        "deal_id": str(prop.deal_id) if prop.deal_id else None,
+        "clientId": str(prop.client_id) if prop.client_id else None,
+        "client_id": str(prop.client_id) if prop.client_id else None,
+        "proposalNumber": prop.proposal_number,
+        "proposal_number": prop.proposal_number,
+        "title": prop.title,
+        "status": prop.status,
+        "currency": prop.currency,
+        "subtotal": float(prop.subtotal),
+        "grandTotal": float(prop.subtotal),
+        "grand_total": float(prop.subtotal),
+        "validUntil": prop.valid_until.isoformat() if prop.valid_until else None,
+        "valid_until": prop.valid_until.isoformat() if prop.valid_until else None,
+        "executiveSummary": prop.executive_summary,
+        "executive_summary": prop.executive_summary,
+        "scopeOfWork": prop.scope_of_work,
+        "scope_of_work": prop.scope_of_work,
+        "termsAndConditions": prop.terms_and_conditions,
+        "terms_and_conditions": prop.terms_and_conditions,
+        "notes": prop.executive_summary or prop.notes,
+        "isAmendmentRequested": bool(prop.amendment_notes),
+        "amendmentNotes": prop.amendment_notes,
+        "sentAt": prop.sent_at.isoformat() if prop.sent_at else None,
+        "respondedAt": prop.responded_at.isoformat() if prop.responded_at else None,
+        "signedByName": prop.signer_name,
+        "viewCount": prop.view_count,
+        "convertedDocumentId": str(prop.converted_document_id) if prop.converted_document_id else None,
+        "client": {
+            "id": str(client.id),
+            "name": client.name,
+            "email": client.email,
+        } if client else None,
+        "deal": {
+            "id": str(deal.id),
+            "title": deal.title,
+        } if deal else None,
+        "items": serialized_items,
+        "publicToken": token,
+    }
+
+    return {
+        "success": True,
+        "proposal": proposal_data,
+        "items": serialized_items,
+        "publicToken": token,
+    }
 
 
 @router.post("/crm/proposals")
@@ -332,7 +461,12 @@ async def create_proposal(
     proposal_number = f"PROP-{now.strftime('%y%m')}-{secrets.randbelow(9000) + 1000}"
 
     subtotal = sum((it.quantity * it.unit_price) - it.discount_amount for it in req.items) if req.items else Decimal("0.00")
-    v_until = date.fromisoformat(req.valid_until) if req.valid_until else None
+    v_until = None
+    if req.valid_until:
+        try:
+            v_until = date.fromisoformat(req.valid_until.split("T")[0])
+        except Exception:
+            pass
 
     prop = Proposal(
         shop_id=uuid.UUID(req.shop_id),
@@ -344,19 +478,24 @@ async def create_proposal(
         subtotal=subtotal,
         status="DRAFT",
         valid_until=v_until,
-        notes=req.notes.strip() if req.notes else None,
+        notes=req.notes.strip() if req.notes else (req.executive_summary.strip() if req.executive_summary else None),
+        executive_summary=req.executive_summary.strip() if req.executive_summary else (req.notes.strip() if req.notes else None),
+        scope_of_work=req.scope_of_work.strip() if req.scope_of_work else None,
         terms_and_conditions=req.terms_and_conditions.strip() if req.terms_and_conditions else None,
     )
     db.add(prop)
     await db.flush()
 
     for idx, it in enumerate(req.items, start=1):
+        line_tot = it.item_total if it.item_total is not None else ((it.quantity * it.unit_price) - it.discount_amount)
         p_item = ProposalItem(
             proposal_id=prop.id,
+            package_label=it.package_label,
             description=it.description,
+            notes=it.notes,
             quantity=it.quantity,
             unit_price=it.unit_price,
-            item_total=it.item_total or (it.quantity * it.unit_price),
+            item_total=line_tot,
             display_order=idx,
         )
         db.add(p_item)
@@ -367,6 +506,105 @@ async def create_proposal(
 
     await db.commit()
     return {"success": True, "proposalId": str(prop.id), "token": guest_token, "proposalNumber": prop.proposal_number}
+
+
+@router.put("/crm/proposals/{proposal_id}")
+@router.patch("/crm/proposals/{proposal_id}")
+async def update_proposal(
+    proposal_id: uuid.UUID,
+    req: UpdateProposalRequest,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    prop = await db.get(Proposal, proposal_id)
+    if not prop:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+
+    if req.title is not None:
+        prop.title = req.title.strip()
+    if req.currency is not None:
+        prop.currency = req.currency.strip().upper()
+    if req.status is not None:
+        prop.status = req.status.strip().upper()
+    if req.deal_id is not None:
+        try:
+            prop.deal_id = uuid.UUID(req.deal_id) if req.deal_id.strip() else None
+        except Exception:
+            pass
+    if req.client_id is not None:
+        try:
+            prop.client_id = uuid.UUID(req.client_id) if req.client_id.strip() else None
+        except Exception:
+            pass
+    if req.valid_until is not None:
+        try:
+            val = req.valid_until.strip()
+            if val:
+                prop.valid_until = date.fromisoformat(val.split("T")[0])
+            else:
+                prop.valid_until = None
+        except Exception:
+            pass
+    if req.notes is not None:
+        prop.executive_summary = req.notes.strip() if req.notes else None
+    if req.executive_summary is not None:
+        prop.executive_summary = req.executive_summary.strip() if req.executive_summary else None
+    if req.scope_of_work is not None:
+        prop.scope_of_work = req.scope_of_work.strip() if req.scope_of_work else None
+    if req.terms_and_conditions is not None:
+        prop.terms_and_conditions = req.terms_and_conditions.strip() if req.terms_and_conditions else None
+
+    # Update line items if provided
+    if req.items is not None:
+        await db.execute(delete(ProposalItem).where(ProposalItem.proposal_id == prop.id))
+        subtotal = Decimal("0.00")
+        for idx, it in enumerate(req.items, start=1):
+            line_tot = it.item_total if it.item_total is not None else ((it.quantity * it.unit_price) - it.discount_amount)
+            subtotal += line_tot
+            p_item = ProposalItem(
+                proposal_id=prop.id,
+                package_label=it.package_label,
+                description=it.description,
+                notes=it.notes,
+                quantity=it.quantity,
+                unit_price=it.unit_price,
+                item_total=line_tot,
+                display_order=idx,
+            )
+            db.add(p_item)
+        prop.subtotal = subtotal
+
+    prop.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(prop)
+
+    token_q = select(ProposalToken.token).where(ProposalToken.proposal_id == prop.id)
+    token = (await db.execute(token_q)).scalar_one_or_none()
+    if not token:
+        token = secrets.token_hex(24)
+        db.add(ProposalToken(proposal_id=prop.id, token=token))
+        await db.commit()
+
+    return {
+        "success": True,
+        "message": "Proposal updated successfully",
+        "proposalId": str(prop.id),
+        "publicToken": token,
+    }
+
+
+@router.delete("/crm/proposals/{proposal_id}")
+async def delete_proposal(
+    proposal_id: uuid.UUID,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    prop = await db.get(Proposal, proposal_id)
+    if not prop:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    await db.delete(prop)
+    await db.commit()
+    return {"success": True, "message": "Proposal deleted successfully"}
 
 
 @router.post("/crm/proposals/{proposal_id}/send")

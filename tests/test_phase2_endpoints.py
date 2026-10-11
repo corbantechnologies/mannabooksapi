@@ -178,13 +178,39 @@ async def test_crm_operations_hr_phase2_endpoints_lifecycle():
         prop_resp = res.json()
         assert prop_resp["success"] is True
         guest_token = prop_resp["token"]
+        prop_id = prop_resp["proposalId"]
+
+        # 1.4b Edit / Update Proposal
+        edit_payload = {
+            "title": "Corporate Cyber Audit 2026 - Updated Scope",
+            "notes": "Added endpoint monitoring and server audits",
+            "items": [
+                {
+                    "description": "Network Hardening & Firewall Upgrade",
+                    "quantity": "2.00",
+                    "unit_price": "60000.00",
+                    "discount_amount": "0.00",
+                    "item_total": "120000.00",
+                }
+            ]
+        }
+        res_edit = await client.put(f"/v1/crm/proposals/{prop_id}", json=edit_payload, headers=auth_headers)
+        assert res_edit.status_code == 200, res_edit.text
+        assert res_edit.json()["success"] is True
+
+        # Verify updated proposal
+        res_get_prop = await client.get(f"/v1/crm/proposals/{prop_id}", headers=auth_headers)
+        assert res_get_prop.status_code == 200
+        get_data = res_get_prop.json()
+        assert get_data["proposal"]["title"] == "Corporate Cyber Audit 2026 - Updated Scope"
+        assert get_data["proposal"]["subtotal"] == 120000.00
 
         # 1.5 Public View & Accept Proposal (No Login Required)
         res_pub = await client.get(f"/v1/crm/proposals/public/{guest_token}")
         assert res_pub.status_code == 200, res_pub.text
         pub_data = res_pub.json()
         assert pub_data["success"] is True
-        assert pub_data["proposal"]["subtotal"] == 250000.00
+        assert pub_data["proposal"]["subtotal"] == 120000.00
 
         res_accept = await client.post(f"/v1/crm/proposals/public/{guest_token}/accept")
         assert res_accept.status_code == 200
