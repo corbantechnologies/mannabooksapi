@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Literal
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 class DocumentItemInput(BaseModel):
@@ -31,6 +31,54 @@ class DocumentCreateRequest(BaseModel):
     requires_etims: bool = False
     items: List[DocumentItemInput] = Field(..., min_length=1)
 
+    @field_validator("type", mode="before")
+    @classmethod
+    def normalize_type(cls, v: Optional[str]) -> str:
+        if not v:
+            return "INVOICE"
+        val = str(v).strip().upper()
+        mapping = {
+            "QUOTE": "QUOTATION",
+            "QUOTATION": "QUOTATION",
+            "ESTIMATE": "QUOTATION",
+            "PROFORMA": "INVOICE",
+            "PROFORMA_INVOICE": "INVOICE",
+            "INV": "INVOICE",
+            "INVOICE": "INVOICE",
+            "RECEIPT": "RECEIPT",
+            "REC": "RECEIPT",
+            "LPO": "LPO",
+            "PO": "PO",
+            "PURCHASE_ORDER": "PO",
+            "LSO": "LSO",
+            "DELIVERY_NOTE": "DELIVERY_NOTE",
+            "DN": "DELIVERY_NOTE",
+            "CREDIT_NOTE": "CREDIT_NOTE",
+            "CN": "CREDIT_NOTE",
+            "DEBIT_NOTE": "DEBIT_NOTE",
+            "GOODS_RECEIVED_NOTE": "GOODS_RECEIVED_NOTE",
+            "GRN": "GOODS_RECEIVED_NOTE",
+            "SERVICE_COMPLETION_NOTE": "SERVICE_COMPLETION_NOTE",
+            "PAYMENT_VOUCHER": "PAYMENT_VOUCHER",
+            "PV": "PAYMENT_VOUCHER",
+            "PAYROLL_VOUCHER": "PAYROLL_VOUCHER",
+        }
+        return mapping.get(val, val)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, v: Optional[str]) -> str:
+        if not v:
+            return "DRAFT"
+        val = str(v).strip().upper()
+        mapping = {
+            "SENT": "ISSUED",
+            "OPEN": "ISSUED",
+            "PENDING": "ISSUED",
+            "APPROVED": "ISSUED",
+        }
+        return mapping.get(val, val)
+
 
 class CreditNoteItemInput(BaseModel):
     item_id: Optional[uuid.UUID] = None
@@ -51,6 +99,20 @@ class CreditNoteCreateRequest(BaseModel):
 
 class DocumentStatusUpdateRequest(BaseModel):
     status: str
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, v: Optional[str]) -> str:
+        if not v:
+            return "DRAFT"
+        val = str(v).strip().upper()
+        mapping = {
+            "SENT": "ISSUED",
+            "OPEN": "ISSUED",
+            "PENDING": "ISSUED",
+            "APPROVED": "ISSUED",
+        }
+        return mapping.get(val, val)
 
 
 class DocumentPatchRequest(BaseModel):

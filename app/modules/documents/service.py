@@ -31,8 +31,58 @@ def compute_item_tax_and_total(quantity: Decimal, unit_price: Decimal, tax_type:
     return tax, total
 
 
+DOC_TYPE_MAPPING = {
+    "QUOTE": "QUOTATION",
+    "QUOTATION": "QUOTATION",
+    "ESTIMATE": "QUOTATION",
+    "PROFORMA": "INVOICE",
+    "PROFORMA_INVOICE": "INVOICE",
+    "INV": "INVOICE",
+    "INVOICE": "INVOICE",
+    "RECEIPT": "RECEIPT",
+    "REC": "RECEIPT",
+    "LPO": "LPO",
+    "PO": "PO",
+    "PURCHASE_ORDER": "PO",
+    "LSO": "LSO",
+    "DELIVERY_NOTE": "DELIVERY_NOTE",
+    "DN": "DELIVERY_NOTE",
+    "CREDIT_NOTE": "CREDIT_NOTE",
+    "CN": "CREDIT_NOTE",
+    "DEBIT_NOTE": "DEBIT_NOTE",
+    "GOODS_RECEIVED_NOTE": "GOODS_RECEIVED_NOTE",
+    "GRN": "GOODS_RECEIVED_NOTE",
+    "SERVICE_COMPLETION_NOTE": "SERVICE_COMPLETION_NOTE",
+    "PAYMENT_VOUCHER": "PAYMENT_VOUCHER",
+    "PV": "PAYMENT_VOUCHER",
+    "PAYROLL_VOUCHER": "PAYROLL_VOUCHER",
+}
+
+DOC_STATUS_MAPPING = {
+    "SENT": "ISSUED",
+    "OPEN": "ISSUED",
+    "PENDING": "ISSUED",
+    "APPROVED": "ISSUED",
+}
+
+
+def normalize_doc_type(doc_type: Optional[str]) -> str:
+    if not doc_type:
+        return "INVOICE"
+    t = str(doc_type).strip().upper()
+    return DOC_TYPE_MAPPING.get(t, t)
+
+
+def normalize_doc_status(status: Optional[str]) -> str:
+    if not status:
+        return "DRAFT"
+    s = str(status).strip().upper()
+    return DOC_STATUS_MAPPING.get(s, s)
+
+
 async def generate_doc_number(db: AsyncSession, shop_id: uuid.UUID, doc_type: str) -> str:
     """Generates consecutive prefix-based document numbers (e.g. INV-0001, CN-0001)."""
+    canonical_type = normalize_doc_type(doc_type)
     prefix_map = {
         "INVOICE": "INV",
         "CREDIT_NOTE": "CN",
@@ -46,9 +96,10 @@ async def generate_doc_number(db: AsyncSession, shop_id: uuid.UUID, doc_type: st
         "DEBIT_NOTE": "DN",
         "GOODS_RECEIVED_NOTE": "GRN",
         "PAYMENT_VOUCHER": "PV",
+        "PAYROLL_VOUCHER": "PRV",
     }
-    prefix = prefix_map.get(doc_type, "DOC")
-    q = select(func.count(Document.id)).where(and_(Document.shop_id == shop_id, Document.type == doc_type))
+    prefix = prefix_map.get(canonical_type, prefix_map.get(doc_type, "DOC"))
+    q = select(func.count(Document.id)).where(and_(Document.shop_id == shop_id, Document.type == canonical_type))
     res = await db.execute(q)
     count = (res.scalar() or 0) + 1
     return f"{prefix}-{count:04d}"
@@ -70,9 +121,9 @@ async def list_documents(
         selectinload(Document.supplier),
     )
     if doc_type:
-        q = q.where(Document.type == doc_type)
+        q = q.where(Document.type == normalize_doc_type(doc_type))
     if doc_status:
-        q = q.where(Document.status == doc_status)
+        q = q.where(Document.status == normalize_doc_status(doc_status))
     if client_id:
         q = q.where(Document.client_id == client_id)
     if supplier_id:
@@ -94,7 +145,9 @@ async def get_document_by_id(db: AsyncSession, shop_id: uuid.UUID, document_id: 
 
 
 async def create_document(db: AsyncSession, shop_id: uuid.UUID, req: DocumentCreateRequest) -> Document:
-    doc_num = req.doc_number.strip() if req.doc_number else await generate_doc_number(db, shop_id, req.type)
+    canonical_type = normalize_doc_type(req.type)
+    canonical_status = normalize_doc_status(req.status)
+    doc_num = req.doc_number.strip() if req.doc_number else await generate_doc_number(db, shop_id, canonical_type)
 
     total_sub = Decimal("0.00")
     total_tax = Decimal("0.00")
@@ -124,9 +177,9 @@ async def create_document(db: AsyncSession, shop_id: uuid.UUID, req: DocumentCre
         shop_id=shop_id,
         client_id=req.client_id,
         supplier_id=req.supplier_id,
-        type=req.type,
+        type=canonical_type,
         doc_number=doc_num,
-        status=req.status,
+        status=canonical_status,
         requires_etims=req.requires_etims,
         notes=req.notes,
         terms_and_conditions=req.terms_and_conditions,
@@ -275,7 +328,7 @@ async def update_document_status(
     doc = await get_document_by_id(db, shop_id, document_id)
     if not doc:
         return None
-    doc.status = new_status
+    doc.status = normalize_doc_status(new_status)
     await db.commit()
     return await get_document_by_id(db, shop_id, document_id)
 
@@ -292,7 +345,9 @@ async def update_document(
     if req.supplier_id is not None:
         doc.supplier_id = req.supplier_id
     if req.type:
-        doc.type = req.type
+        doc.type = normalize_doc_type(req.type)
+    if req.status:
+        doc.status = normalize_doc_status(req.status)
     if req.notes is not None:
         doc.notes = req.notes
     if req.terms_and_conditions is not None:
