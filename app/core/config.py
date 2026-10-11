@@ -1,4 +1,4 @@
-from functools import lru_cache
+﻿from functools import lru_cache
 from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     CRON_SECRET: str
 
     # Session & Cookie
-    COOKIE_NAME: str = "kenya-nzuri-kabisa"
+    COOKIE_NAME: str = "access_token"
     COOKIE_DURATION_DAYS: int = 30
 
     # JWT Settings (required)

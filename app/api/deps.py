@@ -1,4 +1,4 @@
-# app/api/deps.py
+﻿# app/api/deps.py
 from typing import Optional
 from fastapi import Header, HTTPException, status, Depends, Cookie
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,9 +19,7 @@ settings = get_settings()
 async def verify_internal_api_key(
     x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
-    cookie_token: Optional[str] = Cookie(None, alias="kenya-nzuri-kabisa"),
-    manna_cookie: Optional[str] = Cookie(None, alias="manna_session_token"),
-    access_cookie: Optional[str] = Cookie(None, alias="manna_access_token"),
+    access_token: Optional[str] = Cookie(None, alias="access_token"),
     db: AsyncSession = Depends(get_db),
 ):
     """Ensure internal communication originates from Next.js BFF or an authenticated user."""
@@ -38,9 +36,9 @@ async def verify_internal_api_key(
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization.split()[1]
 
-    # 2. Cookie fallback from Next.js reverse proxy rewrites
-    if not token:
-        token = cookie_token or manna_cookie or access_cookie
+    # 2. Cookie fallback from standard access_token
+    if not token and access_token:
+        token = access_token
 
     if token:
         user_id = verify_access_token(token)
@@ -87,20 +85,18 @@ async def verify_cron_or_internal_key(
 
 async def get_current_user(
     authorization: Optional[str] = Header(None, alias="Authorization"),
-    cookie_token: Optional[str] = Cookie(None, alias="kenya-nzuri-kabisa"),
-    manna_cookie: Optional[str] = Cookie(None, alias="manna_session_token"),
-    access_cookie: Optional[str] = Cookie(None, alias="manna_access_token"),
+    access_token: Optional[str] = Cookie(None, alias="access_token"),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """
-    Extract Bearer JWT from header or forwarded cookie, verify it, and return the User.
+    Extract Bearer JWT from header or standard access_token cookie, verify it, and return the User.
     Always raises 401 (never 422).
     """
     token = None
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization.split()[1]
-    elif cookie_token or manna_cookie or access_cookie:
-        token = cookie_token or manna_cookie or access_cookie
+    elif access_token:
+        token = access_token
 
     if not token:
         raise HTTPException(
