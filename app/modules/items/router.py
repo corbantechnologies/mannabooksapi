@@ -37,18 +37,6 @@ async def list_items_endpoint(
     return await list_items(db, shop_id=shop_id, item_type=item_type, search=search, limit=limit, offset=offset)
 
 
-@router.get("/{item_id}", response_model=ItemResponse)
-async def get_item_endpoint(
-    item_id: uuid.UUID,
-    shop_id: uuid.UUID = Query(...),
-    db: AsyncSession = Depends(get_db),
-):
-    item = await get_item_by_id(db, shop_id=shop_id, item_id=item_id)
-    if not item:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
-    return item
-
-
 @router.post("", response_model=ItemResponse, status_code=status.HTTP_201_CREATED)
 async def create_item_endpoint(
     req: ItemCreateRequest,
@@ -56,32 +44,6 @@ async def create_item_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     return await create_item(db, shop_id=shop_id, req=req)
-
-
-@router.patch("/{item_id}", response_model=ItemResponse)
-async def update_item_endpoint(
-    item_id: uuid.UUID,
-    req: ItemUpdateRequest,
-    shop_id: uuid.UUID = Query(...),
-    db: AsyncSession = Depends(get_db),
-):
-    item = await update_item(db, shop_id=shop_id, item_id=item_id, req=req)
-    if not item:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
-    return item
-
-
-@router.delete("/{item_id}")
-async def delete_item_endpoint(
-    item_id: uuid.UUID,
-    shop_id: uuid.UUID = Query(...),
-    db: AsyncSession = Depends(get_db),
-):
-    from app.modules.items.service import delete_item
-    deleted = await delete_item(db, shop_id=shop_id, item_id=item_id)
-    if not deleted:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
-    return {"success": True, "message": "Item deleted successfully"}
 
 
 
@@ -392,5 +354,48 @@ async def cancel_stock_transfer_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     return {"success": True, "transferId": str(transfer_id), "status": "CANCELLED"}
+
+
+# ==========================================
+# ITEM BY ID (WILDCARD MUST BE AT BOTTOM)
+# ==========================================
+
+@router.get("/{item_id}", response_model=ItemResponse)
+async def get_item_endpoint(
+    item_id: uuid.UUID,
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    item = await get_item_by_id(db, shop_id=shop_id, item_id=item_id)
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+    return item
+
+
+@router.patch("/{item_id}", response_model=ItemResponse)
+async def update_item_endpoint(
+    item_id: uuid.UUID,
+    req: ItemUpdateRequest,
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    item = await update_item(db, shop_id=shop_id, item_id=item_id, req=req)
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+    return item
+
+
+@router.delete("/{item_id}")
+async def delete_item_endpoint(
+    item_id: uuid.UUID,
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.modules.items.service import delete_item
+    deleted = await delete_item(db, shop_id=shop_id, item_id=item_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+    return {"success": True, "message": "Item deleted successfully"}
+
 
 

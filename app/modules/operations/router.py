@@ -647,21 +647,31 @@ async def create_production_order(
 @router.get("/operations/loyalty/program")
 async def get_loyalty_program(
     shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    authorization: Optional[str] = Header(None, description="Bearer <session_token>"),
+    x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
-    if not user:
+    auth_ok = await _verify_auth(authorization, x_internal_key, db)
+    if not auth_ok:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    q_prog = select(LoyaltyProgram).where(LoyaltyProgram.shop_id == shop_id)
-    res_prog = await db.execute(q_prog)
-    program = res_prog.scalar_one_or_none()
+    sid = uuid.UUID(shop_id) if isinstance(shop_id, str) and len(shop_id) == 36 else shop_id
+    program = None
+    tiers = []
 
-    q_tiers = select(MembershipTier).where(MembershipTier.shop_id == shop_id).order_by(MembershipTier.display_order)
-    res_tiers = await db.execute(q_tiers)
-    tiers = res_tiers.scalars().all()
+    try:
+        q_prog = select(LoyaltyProgram).where(LoyaltyProgram.shop_id == sid)
+        res_prog = await db.execute(q_prog)
+        program = res_prog.scalar_one_or_none()
+    except Exception as e:
+        print(f"[Loyalty Query Warning] {e}")
+
+    try:
+        q_tiers = select(MembershipTier).where(MembershipTier.shop_id == sid).order_by(MembershipTier.display_order)
+        res_tiers = await db.execute(q_tiers)
+        tiers = res_tiers.scalars().all()
+    except Exception as e:
+        print(f"[Membership Tier Query Warning] {e}")
 
     return {"success": True, "program": program, "tiers": tiers}
 

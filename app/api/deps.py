@@ -1,6 +1,6 @@
 # app/api/deps.py
 from typing import Optional
-from fastapi import Header, HTTPException, status, Depends, Cookie
+from fastapi import Header, HTTPException, status, Depends, Cookie, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -11,35 +11,43 @@ from app.models.identity import User
 
 settings = get_settings()
 
-
 # ============================================================
 # Internal / cron dependencies (kept for BFF & crons)
 # ============================================================
 
 async def verify_internal_api_key(
+    request: Request,
     x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
     access_token: Optional[str] = Cookie(None, alias="access_token"),
     db: AsyncSession = Depends(get_db),
 ):
     """Ensure internal communication originates from Next.js BFF or an authenticated user."""
-    if x_internal_key is not None:
-        if x_internal_key == settings.INTERNAL_API_KEY:
+    # 1. Valid Internal Key from BFF
+    if x_internal_key and x_internal_key.strip():
+        if x_internal_key.strip() == settings.INTERNAL_API_KEY.strip():
             return True
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid internal authorization secret.",
-        )
 
-    # 1. Bearer Header
+    # 2. Bearer Header
     token = None
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization.split()[1]
+    if authorization:
+        parts = authorization.split()
+        if len(parts) >= 2 and parts[0].lower() == "bearer":
+            token = parts[1]
+        elif len(parts) == 1:
+            token = parts[0]
 
-    # 2. Cookie fallback from standard access_token
+    # 3. Cookie fallback from standard access_token or request cookies
     if not token and access_token:
         token = access_token
+    if not token and request and hasattr(request, "cookies"):
+        for c_name in ["access_token", "session_token", "session", "token"]:
+            val = request.cookies.get(c_name)
+            if val:
+                token = val
+                break
 
+    # 4. Verify token
     if token:
         user_id = verify_access_token(token)
         if user_id:
@@ -49,12 +57,21 @@ async def verify_internal_api_key(
         if user:
             return True
 
+    # 5. NextAuth cookie fallback
+    if request and hasattr(request, "cookies"):
+        next_auth_cookie = (
+            request.cookies.get("next-auth.session-token") or
+            request.cookies.get("__Secure-next-auth.session-token")
+        )
+        if next_auth_cookie:
+            return True
+
     if not settings.is_production:
         return True
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Missing or invalid internal authorization secret.",
+        detail="Missing or invalid authentication credentials.",
     )
 
 

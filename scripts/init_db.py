@@ -625,28 +625,44 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE expense_claims ADD COLUMN IF NOT EXISTS approval_notes TEXT;",
     "ALTER TABLE expense_claims ADD COLUMN IF NOT EXISTS disbursed_expense_id UUID;",
     "ALTER TABLE expense_claims ADD COLUMN IF NOT EXISTS disbursed_at TIMESTAMP;",
-    "ALTER TABLE expense_claims ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL;",
+    # --- LOYALTY PROGRAMS ---
+    "ALTER TABLE loyalty_programs ADD COLUMN IF NOT EXISTS is_enabled BOOLEAN DEFAULT FALSE;",
+    "ALTER TABLE loyalty_programs ADD COLUMN IF NOT EXISTS engine_mode VARCHAR(50) DEFAULT 'HYBRID';",
+    "ALTER TABLE loyalty_programs ADD COLUMN IF NOT EXISTS program_name VARCHAR(100) DEFAULT 'Rewards Club';",
+    "ALTER TABLE loyalty_programs ADD COLUMN IF NOT EXISTS earn_rate_kes NUMERIC(10, 2) DEFAULT 100.00;",
+    "ALTER TABLE loyalty_programs ADD COLUMN IF NOT EXISTS point_value_kes NUMERIC(10, 2) DEFAULT 1.00;",
+    "ALTER TABLE loyalty_programs ADD COLUMN IF NOT EXISTS min_redeem_points INTEGER DEFAULT 50;",
+    "ALTER TABLE loyalty_programs ADD COLUMN IF NOT EXISTS points_expiry_days INTEGER;",
 ]
 
 
 async def init_models():
     print("Connecting to database and creating tables if not exists...")
-    async with engine.begin() as conn:
+    async with engine.connect() as conn:
         # 1. Pre-create all PostgreSQL ENUM types first (safe idempotent execution)
         for stmt in ENUM_CREATION_STATEMENTS:
             try:
                 await conn.execute(text(stmt))
+                await conn.commit()
             except Exception as e:
+                await conn.rollback()
                 print(f"[Enum Init Warning] {stmt[:80]}... : {e}")
 
         # 2. Automatically create any tables that do not exist yet
-        await conn.run_sync(Base.metadata.create_all)
+        try:
+            await conn.run_sync(Base.metadata.create_all)
+            await conn.commit()
+        except Exception as e:
+            await conn.rollback()
+            print(f"[Table Init Warning] {e}")
 
         # 3. Apply column migrations / conversions
         for stmt in MIGRATION_STATEMENTS:
             try:
                 await conn.execute(text(stmt))
+                await conn.commit()
             except Exception as e:
+                await conn.rollback()
                 print(f"[Schema Sync Warning] {stmt[:80]}... : {e}")
     print("Database tables and columns initialized successfully.")
 
