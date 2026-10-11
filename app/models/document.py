@@ -117,6 +117,22 @@ class Document(Base):
         UniqueConstraint("shop_id", "doc_number", "type", name="unique_shop_doc_number"),
     )
 
+    @property
+    def subtotal(self):
+        return self.sub_total
+
+    @subtotal.setter
+    def subtotal(self, val):
+        self.sub_total = val
+
+    @property
+    def tax_total(self):
+        return self.tax_amount
+
+    @tax_total.setter
+    def tax_total(self, val):
+        self.tax_amount = val
+
 
 class DocumentItem(Base):
     __tablename__ = "document_items"

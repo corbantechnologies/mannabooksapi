@@ -49,7 +49,7 @@ class CreateProposalItemRequest(BaseModel):
     quantity: Decimal = Decimal("1.0000")
     unit_price: Decimal = Decimal("0.00")
     discount_amount: Decimal = Decimal("0.00")
-    tax_type: str = "NONE"
+    tax_type: str = "EXEMPT"
     tax_amount: Decimal = Decimal("0.00")
     item_total: Decimal = Decimal("0.00")
 

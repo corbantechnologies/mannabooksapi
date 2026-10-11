@@ -11,8 +11,7 @@ from app.models.etims import EtimsConfig, EtimsSequence, EtimsTransmission
 from app.models.client import Client
 from app.models.supplier import Supplier
 from app.models.item import Product
-from app.models.inventory import StockLocation, StockLedger
-from app.models.account import ChartOfAccount, FiscalYear
+from app.models.account import ChartOfAccount, FiscalYear, AccountingPeriod
 from app.models.document import Document, DocumentItem
 from app.models.payment import DocumentPayment, PaymentMethod
 from app.models.expense import Expense, Income
@@ -32,10 +31,8 @@ from app.models.governance import AuditLog, Notification
 from sqlalchemy import text
 
 
-MIGRATION_STATEMENTS = [
-    # ============================================================
-    # 1. CREATE ALL REQUIRED ENUM TYPES
-    # ============================================================
+ENUM_CREATION_STATEMENTS = [
+    # Core Document & Accounting Enums
     """
     DO $$ BEGIN
         CREATE TYPE client_type AS ENUM ('WALK_IN', 'INDIVIDUAL', 'CORPORATE');
@@ -76,6 +73,11 @@ MIGRATION_STATEMENTS = [
     """,
     """
     DO $$ BEGIN
+        CREATE TYPE period_status AS ENUM ('OPEN', 'CLOSED');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
         CREATE TYPE expense_category AS ENUM (
             'RENT', 'UTILITIES', 'FUEL', 'MARKETING', 'SALARIES', 'OFFICE_SUPPLIES', 'OTHER'
         );
@@ -98,11 +100,6 @@ MIGRATION_STATEMENTS = [
     """,
     """
     DO $$ BEGIN
-        CREATE TYPE loyalty_engine_mode AS ENUM ('OFF', 'POINTS_ONLY', 'TIERS_ONLY', 'HYBRID');
-    EXCEPTION WHEN duplicate_object THEN null; END $$;
-    """,
-    """
-    DO $$ BEGIN
         CREATE TYPE user_role AS ENUM (
             'OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'STOREKEEPER',
             'CASHIER', 'DISPATCHER', 'SALES_REP', 'EMPLOYEE', 'VIEWER'
@@ -114,6 +111,18 @@ MIGRATION_STATEMENTS = [
         CREATE TYPE invitation_status AS ENUM ('PENDING', 'ACCEPTED', 'REVOKED');
     EXCEPTION WHEN duplicate_object THEN null; END $$;
     """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE tax_regime AS ENUM ('CIT', 'TOT', 'EXEMPT');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE asset_class AS ENUM ('CLASS_1', 'CLASS_2', 'CLASS_3', 'CLASS_4', 'BUILDING');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+
+    # Inventory & Operations Enums
     """
     DO $$ BEGIN
         CREATE TYPE stock_movement_type AS ENUM (
@@ -129,6 +138,124 @@ MIGRATION_STATEMENTS = [
         );
     EXCEPTION WHEN duplicate_object THEN null; END $$;
     """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE stock_transfer_status AS ENUM ('DRAFT', 'IN_TRANSIT', 'COMPLETED', 'CANCELLED');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE production_order_status AS ENUM ('DRAFT', 'COMPLETED', 'CANCELLED');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE stocktake_status AS ENUM ('DRAFT', 'COUNTING', 'COMPLETED', 'CANCELLED');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+
+    # HR & Payroll Enums
+    """
+    DO $$ BEGIN
+        CREATE TYPE employment_type AS ENUM ('FULL_TIME', 'PART_TIME', 'CONTRACT', 'INTERN');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE expense_claim_status AS ENUM ('DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED', 'DISBURSED');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+
+    # Loyalty Enums
+    """
+    DO $$ BEGIN
+        CREATE TYPE loyalty_engine_mode AS ENUM ('OFF', 'POINTS_ONLY', 'TIERS_ONLY', 'HYBRID');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE loyalty_movement_type AS ENUM (
+            'EARN', 'REDEEM', 'MANUAL_ADJUST', 'EXPIRE', 'WALLET_TOPUP', 'WALLET_DEBIT', 'VOID'
+        );
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+
+    # CRM, Projects & Contracts Enums
+    """
+    DO $$ BEGIN
+        CREATE TYPE deal_stage AS ENUM (
+            'LEAD', 'QUALIFIED', 'PROPOSAL_SENT', 'NEGOTIATION', 'WON', 'LOST'
+        );
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE deal_activity_type AS ENUM (
+            'NOTE', 'CALL', 'EMAIL', 'MEETING', 'STAGE_CHANGE', 'PROPOSAL_SENT', 'PROPOSAL_ACCEPTED', 'WON', 'LOST'
+        );
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE proposal_status AS ENUM (
+            'DRAFT', 'SENT', 'VIEWED', 'ACCEPTED', 'AMENDMENT_REQUESTED', 'EXPIRED', 'DECLINED'
+        );
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE contract_status AS ENUM ('ACTIVE', 'PAUSED', 'EXPIRED', 'CANCELLED');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE project_status AS ENUM ('PLANNING', 'ACTIVE', 'ON_HOLD', 'COMPLETED', 'CANCELLED');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE timesheet_status AS ENUM ('DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE milestone_status AS ENUM ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'INVOICED');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+
+    # Governance & Approval Enums
+    """
+    DO $$ BEGIN
+        CREATE TYPE approval_request_type AS ENUM (
+            'PURCHASE_REQUISITION', 'PURCHASE_ORDER', 'EXPENSE_CLAIM', 'CREDIT_NOTE',
+            'STOCK_ADJUSTMENT', 'STOCK_WRITEOFF', 'BUDGET_OVERRUN', 'QUOTE_DISCOUNT',
+            'INVOICE_CANCELLATION', 'CUSTOM'
+        );
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE approval_status AS ENUM ('DRAFT', 'PENDING', 'APPROVED', 'REJECTED', 'CANCELLED');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE approval_priority AS ENUM ('LOW', 'NORMAL', 'HIGH', 'URGENT');
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+    """
+    DO $$ BEGIN
+        CREATE TYPE audit_action AS ENUM (
+            'CREATE', 'UPDATE', 'DELETE', 'STATUS_CHANGE', 'ROLE_CHANGE',
+            'PAYMENT_RECORDED', 'PAYMENT_DELETED', 'PERIOD_CLOSED',
+            'PERIOD_REOPENED', 'FISCAL_YEAR_CLOSED', 'FISCAL_YEAR_REOPENED',
+            'MEMBER_ADDED', 'MEMBER_REMOVED', 'CANCELLATION'
+        );
+    EXCEPTION WHEN duplicate_object THEN null; END $$;
+    """,
+]
+
+MIGRATION_STATEMENTS = [
 
     # ============================================================
     # 2. CONVERT EXISTING VARCHAR COLUMNS → ENUM
@@ -505,7 +632,17 @@ MIGRATION_STATEMENTS = [
 async def init_models():
     print("Connecting to database and creating tables if not exists...")
     async with engine.begin() as conn:
+        # 1. Pre-create all PostgreSQL ENUM types first (safe idempotent execution)
+        for stmt in ENUM_CREATION_STATEMENTS:
+            try:
+                await conn.execute(text(stmt))
+            except Exception as e:
+                print(f"[Enum Init Warning] {stmt[:80]}... : {e}")
+
+        # 2. Automatically create any tables that do not exist yet
         await conn.run_sync(Base.metadata.create_all)
+
+        # 3. Apply column migrations / conversions
         for stmt in MIGRATION_STATEMENTS:
             try:
                 await conn.execute(text(stmt))

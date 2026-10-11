@@ -423,9 +423,11 @@ async def adjust_loyalty_points(
     acc = res_acc.scalar_one_or_none()
 
     if not acc:
+        mem_num = f"MEM-{secrets.token_hex(4).upper()}"
         acc = ClientLoyaltyAccount(
             shop_id=uuid.UUID(req.shop_id),
             client_id=uuid.UUID(req.client_id),
+            member_number=mem_num,
             current_points=0,
             lifetime_points=0,
         )
@@ -454,7 +456,16 @@ async def adjust_loyalty_points(
     db.add(ledger_entry)
     await db.commit()
 
-    return {"success": True, "currentPoints": new_balance}
+    return {
+        "success": True,
+        "currentPoints": new_balance,
+        "account": {
+            "id": str(acc.id),
+            "memberNumber": acc.member_number,
+            "currentPoints": new_balance,
+            "lifetimePoints": acc.lifetime_points,
+        }
+    }
 
 
 class PhoneLoyaltyRequest(BaseModel):

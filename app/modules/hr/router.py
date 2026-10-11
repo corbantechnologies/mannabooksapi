@@ -513,8 +513,8 @@ async def commit_payroll_run(
         status="PAID" if req.status == "PAID" else "DRAFT",
         issue_date=issue_date,
         currency="KES",
-        subtotal=global_subtotal,
-        tax_total=Decimal("0.00"),
+        sub_total=global_subtotal,
+        tax_amount=Decimal("0.00"),
         grand_total=global_grandtotal,
         notes=f"Statutory Payroll Run for {req.payroll_period_code}",
     )
@@ -527,7 +527,7 @@ async def commit_payroll_run(
             description=item["desc"],
             quantity=Decimal("1.00"),
             unit_price=item["net"],
-            tax_type="NONE",
+            tax_type="EXEMPT",
             tax_amount=Decimal("0.00"),
             item_total=item["net"],
         )

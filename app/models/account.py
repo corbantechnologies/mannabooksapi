@@ -27,6 +27,14 @@ class ChartOfAccount(Base):
         UniqueConstraint("shop_id", "code", name="unique_shop_account_code"),
     )
 
+    @property
+    def type(self):
+        return self.account_type
+
+    @type.setter
+    def type(self, val):
+        self.account_type = val
+
 
 class FiscalYear(Base):
     __tablename__ = "fiscal_years"

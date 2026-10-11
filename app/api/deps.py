@@ -1,4 +1,4 @@
-﻿# app/api/deps.py
+# app/api/deps.py
 from typing import Optional
 from fastapi import Header, HTTPException, status, Depends, Cookie
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -94,9 +94,13 @@ async def get_current_user(
     """
     token = None
     if authorization and authorization.lower().startswith("bearer "):
-        token = authorization.split()[1]
+        parts = authorization.split()
+        if len(parts) > 1:
+            token = parts[1]
     elif access_token:
         token = access_token
+    elif authorization:
+        token = authorization.strip()
 
     if not token:
         raise HTTPException(
@@ -104,23 +108,23 @@ async def get_current_user(
             detail="Unauthorized - Missing or invalid Authorization header",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # 1. Try JWT
     user_id = verify_access_token(token)
+    if user_id:
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if user:
+            return user
 
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized - Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    # 2. Try session token
+    from app.modules.auth.service import verify_and_get_session
+    user = await verify_and_get_session(db, token)
+    if user:
+        return user
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized - User not found",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    return user
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Unauthorized - Invalid or expired token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
