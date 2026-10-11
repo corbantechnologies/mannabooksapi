@@ -260,6 +260,49 @@ async def get_public_document_endpoint(
     q_pm = select(PaymentMethod).where(PaymentMethod.shop_id == doc.shop_id)
     pms = (await db.execute(q_pm)).scalars().all()
 
+    # Child documents
+    q_children = (
+        select(Document)
+        .where(and_(Document.parent_document_id == doc.id, Document.shop_id == doc.shop_id))
+        .order_by(Document.created_at.asc())
+    )
+    children_res = list((await db.execute(q_children)).scalars().all())
+
+    # Self-healing: If quotation was accepted/confirmed but child invoice was missing, auto-generate it
+    if (
+        doc.type == "QUOTATION"
+        and (doc.status == "CONFIRMED" or doc.client_portal_response == "ACCEPTED")
+        and not any(c.type == "INVOICE" for c in children_res)
+    ):
+        try:
+            from app.modules.documents.service import convert_document
+            await convert_document(db, shop_id=doc.shop_id, document_id=doc.id, target_type="INVOICE")
+            doc.status = "CONFIRMED"
+            await db.commit()
+            q_children_re = (
+                select(Document)
+                .where(and_(Document.parent_document_id == doc.id, Document.shop_id == doc.shop_id))
+                .order_by(Document.created_at.asc())
+            )
+            children_res = list((await db.execute(q_children_re)).scalars().all())
+        except Exception:
+            pass
+
+    child_docs = [
+        {
+            "id": str(c.id),
+            "docNumber": c.doc_number,
+            "type": c.type,
+            "status": c.status,
+            "grandTotal": str(c.grand_total or "0.00"),
+            "issueDate": c.issue_date.isoformat() if c.issue_date else None,
+        }
+        for c in children_res
+    ]
+
+    portal_response = doc.client_portal_response or ("ACCEPTED" if doc.status == "CONFIRMED" else None)
+    is_decided = portal_response in ("ACCEPTED", "DECLINED") or doc.status in ("CONFIRMED", "CANCELLED")
+
     return {
         "success": True,
         "document": {
@@ -267,6 +310,11 @@ async def get_public_document_endpoint(
             "docNumber": doc.doc_number,
             "type": doc.type,
             "status": doc.status,
+            "clientPortalResponse": portal_response,
+            "client_portal_response": portal_response,
+            "clientAmendmentNotes": doc.client_amendment_notes,
+            "isAccepted": portal_response == "ACCEPTED" or doc.status == "CONFIRMED",
+            "isDecided": is_decided,
             "currency": doc.currency or "KES",
             "grandTotal": str(doc.grand_total or "0.00"),
             "subTotal": str(doc.sub_total or "0.00"),
@@ -278,6 +326,7 @@ async def get_public_document_endpoint(
             "kraCuInvoiceNumber": doc.kra_cu_invoice_number,
             "requiresEtims": doc.requires_etims,
             "parentDocumentId": str(doc.parent_document_id) if doc.parent_document_id else None,
+            "childDocuments": child_docs,
             "client": {
                 "id": str(doc.client.id),
                 "name": doc.client.name,
