@@ -356,3 +356,36 @@ async def get_consolidated_balance_sheet(
         "isBalanced": abs(total_assets - (total_liabilities + total_equity)) < Decimal("1.00"),
         "subsidiaries": entity_results,
     }
+
+
+class ToggleEliminationRequest(BaseModel):
+    is_eliminated: bool
+
+
+@router.delete("/memberships/{membership_id}")
+async def delete_group_membership(
+    membership_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    mem = await db.get(GroupMembership, membership_id)
+    if not mem:
+        raise HTTPException(status_code=404, detail="Membership not found")
+    await db.delete(mem)
+    await db.commit()
+    return {"success": True, "message": "Membership removed successfully"}
+
+
+@router.patch("/transactions/{tx_id}/elimination")
+async def toggle_tx_elimination(
+    tx_id: uuid.UUID,
+    req: ToggleEliminationRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    tx = await db.get(InterCompanyTransaction, tx_id)
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    tx.is_eliminated = req.is_eliminated
+    await db.commit()
+    await db.refresh(tx)
+    return {"success": True, "isEliminated": tx.is_eliminated}
+

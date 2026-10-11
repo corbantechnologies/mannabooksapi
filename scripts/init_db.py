@@ -24,7 +24,7 @@ from app.models.crm import (
 from app.models.operations import (
     Budget, CostCenter, BillOfMaterials, BomItem, ProductionOrder,
     Stocktake, StocktakeItem, LoyaltyProgram, MembershipTier,
-    ClientLoyaltyAccount, LoyaltyLedger
+    ClientLoyaltyAccount, LoyaltyLedger, StorageBin, ProductBatch
 )
 from app.models.governance import AuditLog, Notification
 

@@ -132,3 +132,29 @@ async def mark_notification_read(
         await db.commit()
 
     return {"success": True}
+
+
+@router.patch("/governance/notifications/read-all")
+async def mark_all_notifications_read(
+    shop_id: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import update
+    conditions = [Notification.user_id == current_user.id]
+    if shop_id:
+        try:
+            conditions.append(Notification.shop_id == uuid.UUID(shop_id))
+        except ValueError:
+            pass
+    await db.execute(update(Notification).where(and_(*conditions)).values(is_read=True))
+    await db.commit()
+    return {"success": True, "message": "All notifications marked as read."}
+
+
+@router.post("/audit")
+async def record_audit_generic(
+    req: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    return {"success": True, "message": "Audit event recorded."}

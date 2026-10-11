@@ -240,3 +240,44 @@ class WhtPayment(Base):
     source_document_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     status: Mapped[str] = mapped_column(Text, default="PENDING", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class StorageBin(Base):
+    __tablename__ = "storage_bins"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    location_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("stock_locations.id", ondelete="CASCADE"), nullable=False, index=True)
+    zone: Mapped[str] = mapped_column(String(50), nullable=False)
+    rack: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    shelf: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    bin_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    capacity_volume: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
+    max_weight: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
+    is_pickable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ProductBatch(Base):
+    __tablename__ = "product_batches"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    productId: Mapped[uuid.UUID] = mapped_column("product_id", UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    location_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("stock_locations.id"), nullable=False, index=True)
+    bin_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("storage_bins.id", ondelete="SET NULL"), nullable=True)
+    batch_number: Mapped[str] = mapped_column(String(100), nullable=False)
+    manufacture_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    expiry_date: Mapped[date] = mapped_column(Date, nullable=False)
+    initial_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
+    current_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
+    cost_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    @property
+    def product_id(self):
+        return self.productId
+
+    @product_id.setter
+    def product_id(self, val):
+        self.productId = val

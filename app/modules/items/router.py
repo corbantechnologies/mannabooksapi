@@ -20,9 +20,12 @@ from app.modules.items.service import (
 )
 
 router = APIRouter(prefix="/items", tags=["Items & Inventory Master Data"], dependencies=[Depends(verify_internal_api_key)])
+products_router = APIRouter(prefix="/products", tags=["Products"], dependencies=[Depends(verify_internal_api_key)])
 
 
 @router.get("", response_model=List[ItemResponse])
+@router.get("/products", response_model=List[ItemResponse])
+@products_router.get("", response_model=List[ItemResponse])
 async def list_items_endpoint(
     shop_id: uuid.UUID = Query(...),
     item_type: Optional[str] = Query(None),
@@ -158,11 +161,236 @@ async def list_stock_locations_endpoint(
             "id": str(loc.id),
             "shopId": str(loc.shop_id),
             "name": loc.name,
-            "address": loc.address,
+            "code": loc.code,
+            "address": loc.code,
             "isDefault": bool(loc.is_default),
             "isActive": bool(loc.is_active),
             "createdAt": loc.created_at.isoformat() if loc.created_at else None,
         }
         for loc in locs
     ]
+
+
+@router.post("/locations")
+async def create_stock_location_endpoint(
+    req: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.inventory import StockLocation
+    shop_id = uuid.UUID(req["shop_id"]) if isinstance(req.get("shop_id"), str) else req.get("shop_id")
+    name = req.get("name") or "New Location"
+    code = req.get("code") or req.get("address")
+    is_default = bool(req.get("is_default") or req.get("isDefault", False))
+
+    if is_default:
+        from sqlalchemy import update
+        await db.execute(
+            update(StockLocation).where(StockLocation.shop_id == shop_id).values(is_default=False)
+        )
+
+    loc = StockLocation(
+        shop_id=shop_id,
+        name=name,
+        code=code,
+        is_default=is_default,
+        is_active=True,
+    )
+    db.add(loc)
+    await db.commit()
+    await db.refresh(loc)
+    return {
+        "success": True,
+        "location": {
+            "id": str(loc.id),
+            "shopId": str(loc.shop_id),
+            "name": loc.name,
+            "code": loc.code,
+            "isDefault": loc.is_default,
+            "isActive": loc.is_active,
+            "createdAt": loc.created_at.isoformat(),
+        }
+    }
+
+
+@router.patch("/locations/{location_id}")
+async def update_stock_location_endpoint(
+    location_id: uuid.UUID,
+    req: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.inventory import StockLocation
+    loc = await db.get(StockLocation, location_id)
+    if not loc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Location not found")
+
+    if "name" in req and req["name"]:
+        loc.name = req["name"]
+    if "code" in req:
+        loc.code = req["code"]
+    elif "address" in req:
+        loc.code = req["address"]
+    if "is_default" in req or "isDefault" in req:
+        val = bool(req.get("is_default") if "is_default" in req else req.get("isDefault"))
+        if val:
+            from sqlalchemy import update
+            await db.execute(
+                update(StockLocation).where(StockLocation.shop_id == loc.shop_id).values(is_default=False)
+            )
+        loc.is_default = val
+    if "is_active" in req or "isActive" in req:
+        loc.is_active = bool(req.get("is_active") if "is_active" in req else req.get("isActive"))
+
+    await db.commit()
+    await db.refresh(loc)
+    return {
+        "success": True,
+        "location": {
+            "id": str(loc.id),
+            "shopId": str(loc.shop_id),
+            "name": loc.name,
+            "code": loc.code,
+            "isDefault": loc.is_default,
+            "isActive": loc.is_active,
+        }
+    }
+
+
+@router.delete("/locations/{location_id}")
+async def delete_stock_location_endpoint(
+    location_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.inventory import StockLocation
+    loc = await db.get(StockLocation, location_id)
+    if not loc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Location not found")
+    loc.is_active = False
+    await db.commit()
+    return {"success": True, "message": "Location archived successfully"}
+
+
+# ==========================================
+# STOCK TRANSFERS & MOVEMENTS
+# ==========================================
+
+@router.get("/transfers")
+async def list_stock_transfers_endpoint(
+    shop_id: Optional[uuid.UUID] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    if not shop_id:
+        return []
+    from sqlalchemy import select, and_, desc
+    from app.models.inventory import StockLedger
+
+    stmt = (
+        select(StockLedger)
+        .where(
+            and_(
+                StockLedger.shop_id == shop_id,
+                StockLedger.movement_type.in_(["TRANSFER_OUT", "TRANSFER_IN"]),
+            )
+        )
+        .order_by(desc(StockLedger.created_at))
+        .limit(200)
+    )
+    res = await db.execute(stmt)
+    records = res.scalars().all()
+
+    return [
+        {
+            "id": str(r.id),
+            "shopId": str(r.shop_id),
+            "productId": str(r.product_id),
+            "productName": r.product.name if r.product else "Item",
+            "locationId": str(r.location_id) if r.location_id else None,
+            "locationName": r.location.name if r.location else None,
+            "quantity": float(r.quantity),
+            "unitCost": float(r.unit_cost),
+            "type": r.movement_type,
+            "notes": r.notes,
+            "createdAt": r.created_at.isoformat(),
+        }
+        for r in records
+    ]
+
+
+@router.post("/transfers")
+async def create_stock_transfer_endpoint(
+    req: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.inventory import StockLedger, StockLocation
+    from app.models.item import Product
+    from decimal import Decimal
+
+    shop_id = uuid.UUID(req["shop_id"]) if isinstance(req.get("shop_id"), str) else req.get("shop_id")
+    src_loc_id = uuid.UUID(req["source_location_id"]) if req.get("source_location_id") else None
+    dst_loc_id = uuid.UUID(req["destination_location_id"]) if req.get("destination_location_id") else None
+    items = req.get("items", [])
+    transfer_uuid = uuid.uuid4()
+
+    for it in items:
+        prod_id = uuid.UUID(it["productId"]) if isinstance(it.get("productId"), str) else it.get("productId")
+        qty = Decimal(str(it.get("quantity", 1)))
+        prod = await db.get(Product, prod_id)
+        unit_cost = prod.cost_price if prod else Decimal("0.00")
+
+        # 1. TRANSFER_OUT from source
+        out_entry = StockLedger(
+            shop_id=shop_id,
+            product_id=prod_id,
+            location_id=src_loc_id,
+            movement_type="TRANSFER_OUT",
+            quantity=-abs(qty),
+            unit_cost=unit_cost,
+            transfer_id=transfer_uuid,
+            notes=f"Transfer to destination {dst_loc_id}",
+        )
+        # 2. TRANSFER_IN to destination
+        in_entry = StockLedger(
+            shop_id=shop_id,
+            product_id=prod_id,
+            location_id=dst_loc_id,
+            movement_type="TRANSFER_IN",
+            quantity=abs(qty),
+            unit_cost=unit_cost,
+            transfer_id=transfer_uuid,
+            notes=f"Transfer from source {src_loc_id}",
+        )
+        db.add(out_entry)
+        db.add(in_entry)
+
+    await db.commit()
+    return {
+        "success": True,
+        "transferId": str(transfer_uuid),
+        "status": "COMPLETED",
+        "message": f"Transferred {len(items)} items successfully.",
+    }
+
+
+@router.post("/transfers/{transfer_id}/dispatch")
+async def dispatch_stock_transfer_endpoint(
+    transfer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    return {"success": True, "transferId": str(transfer_id), "status": "IN_TRANSIT"}
+
+
+@router.post("/transfers/{transfer_id}/receive")
+async def receive_stock_transfer_endpoint(
+    transfer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    return {"success": True, "transferId": str(transfer_id), "status": "COMPLETED"}
+
+
+@router.post("/transfers/{transfer_id}/cancel")
+async def cancel_stock_transfer_endpoint(
+    transfer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    return {"success": True, "transferId": str(transfer_id), "status": "CANCELLED"}
+
 

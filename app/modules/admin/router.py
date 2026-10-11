@@ -333,6 +333,7 @@ async def update_workspace_plan(shop_id: uuid.UUID, req: UpdateWorkspacePlanRequ
     }
 
 
+@router.post("/workspaces/{shop_id}/suspension")
 @router.post("/workspaces/{shop_id}/toggle-suspension")
 async def toggle_workspace_suspension(shop_id: uuid.UUID, req: ToggleWorkspaceSuspensionRequest, db: AsyncSession = Depends(get_db)):
     """Suspend or unsuspend a workspace."""
@@ -572,11 +573,13 @@ DEFAULT_PLANS = {
 _active_plans = dict(DEFAULT_PLANS)
 
 
+@router.get("/pricing")
 @router.get("/pricing/plans")
 async def get_admin_pricing_plans():
     return {"success": True, "plans": list(_active_plans.values())}
 
 
+@router.post("/pricing")
 @router.post("/pricing/plans")
 async def create_admin_pricing_plan(req: dict):
     plan_id = (req.get("id") or "").upper().strip()
@@ -586,6 +589,7 @@ async def create_admin_pricing_plan(req: dict):
     return {"success": True, "message": f"Plan {plan_id} created successfully.", "plan": req}
 
 
+@router.put("/pricing/{plan_id}")
 @router.put("/pricing/plans/{plan_id}")
 async def update_admin_pricing_plan(plan_id: str, req: dict):
     plan_id = plan_id.upper().strip()
@@ -593,6 +597,7 @@ async def update_admin_pricing_plan(plan_id: str, req: dict):
     return {"success": True, "message": f"Plan {plan_id} updated successfully.", "plan": req}
 
 
+@router.delete("/pricing/{plan_id}")
 @router.delete("/pricing/plans/{plan_id}")
 async def delete_admin_pricing_plan(plan_id: str):
     plan_id = plan_id.upper().strip()

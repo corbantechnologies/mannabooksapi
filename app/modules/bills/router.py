@@ -348,3 +348,79 @@ async def pay_bill(
     await db.commit()
     await db.refresh(bill)
     return {"success": True, "bill": format_bill_dict(bill)}
+
+
+@router.delete("/{bill_id}")
+async def delete_bill(
+    bill_id: uuid.UUID,
+    shop_id: Optional[uuid.UUID] = Query(None),
+    shop_slug: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    bill = await db.get(VendorBill, bill_id)
+    if not bill:
+        raise HTTPException(status_code=404, detail="Vendor bill not found")
+    
+    if bill.status == "PAID":
+        raise HTTPException(status_code=400, detail="Cannot delete a settled bill.")
+    
+    await db.delete(bill)
+    await db.commit()
+    return {"success": True, "message": "Bill deleted successfully"}
+
+
+@router.post("/{bill_id}/approve")
+async def approve_bill(
+    bill_id: uuid.UUID,
+    shop_id: Optional[uuid.UUID] = Query(None),
+    shop_slug: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    bill = await db.get(VendorBill, bill_id)
+    if not bill:
+        raise HTTPException(status_code=404, detail="Vendor bill not found")
+    bill.status = "APPROVED"
+    await db.commit()
+    await db.refresh(bill)
+    return {"success": True, "bill": format_bill_dict(bill)}
+
+
+@router.post("/{bill_id}/cancel")
+async def cancel_bill(
+    bill_id: uuid.UUID,
+    shop_id: Optional[uuid.UUID] = Query(None),
+    shop_slug: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    bill = await db.get(VendorBill, bill_id)
+    if not bill:
+        raise HTTPException(status_code=404, detail="Vendor bill not found")
+    bill.status = "CANCELLED"
+    await db.commit()
+    await db.refresh(bill)
+    return {"success": True, "bill": format_bill_dict(bill)}
+
+
+@router.patch("/{bill_id}/attachment")
+async def update_bill_attachment(
+    bill_id: uuid.UUID,
+    req: dict,
+    shop_id: Optional[uuid.UUID] = Query(None),
+    shop_slug: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    bill = await db.get(VendorBill, bill_id)
+    if not bill:
+        raise HTTPException(status_code=404, detail="Vendor bill not found")
+    
+    if "attachment_url" in req or "attachmentUrl" in req:
+        bill.attachment_url = req.get("attachment_url") or req.get("attachmentUrl")
+    if "attachment_name" in req or "attachmentName" in req:
+        bill.attachment_name = req.get("attachment_name") or req.get("attachmentName")
+    if "attachment_size" in req or "attachmentSize" in req:
+        bill.attachment_size = req.get("attachment_size") or req.get("attachmentSize")
+        
+    await db.commit()
+    await db.refresh(bill)
+    return {"success": True, "bill": format_bill_dict(bill)}
+

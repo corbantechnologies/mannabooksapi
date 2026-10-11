@@ -275,3 +275,454 @@ async def create_journal_entry_endpoint(
     }
 
 
+@router.delete("/{account_id}")
+async def delete_account_endpoint(
+    account_id: uuid.UUID,
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.account import ChartOfAccount
+    account = await db.get(ChartOfAccount, account_id)
+    if not account or account.shop_id != shop_id:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if account.is_system:
+        raise HTTPException(status_code=400, detail="Cannot delete system account")
+    await db.delete(account)
+    await db.commit()
+    return {"success": True, "message": "Account deleted successfully"}
+
+
+@router.get("/chart")
+async def get_chart_of_accounts(
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    accounts = await list_accounts(db, shop_id=shop_id)
+    return {
+        "success": True,
+        "accounts": [
+            {
+                "id": str(a.id),
+                "code": a.code,
+                "name": a.name,
+                "type": a.account_type,
+                "accountType": a.account_type,
+                "isSystem": bool(a.is_system),
+                "parentCode": a.parent_code,
+            }
+            for a in accounts
+        ],
+    }
+
+
+@router.get("/fiscal-years/{fy_id}")
+async def get_fiscal_year_detail_endpoint(
+    fy_id: uuid.UUID,
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import select, and_, asc
+    from app.models.account import FiscalYear, AccountingPeriod
+    fy = await db.get(FiscalYear, fy_id)
+    if not fy or fy.shop_id != shop_id:
+        raise HTTPException(status_code=404, detail="Fiscal year not found")
+
+    p_q = select(AccountingPeriod).where(AccountingPeriod.fiscal_year_id == fy_id).order_by(asc(AccountingPeriod.start_date))
+    res_p = await db.execute(p_q)
+    periods = res_p.scalars().all()
+
+    fy_dict = {
+        "id": str(fy.id),
+        "label": fy.label,
+        "startDate": str(fy.start_date),
+        "endDate": str(fy.end_date),
+        "isClosed": bool(fy.is_closed),
+        "isCurrent": bool(fy.is_current),
+    }
+
+    return {
+        "success": True,
+        "fiscalYear": fy_dict,
+        "periods": [
+            {
+                "id": str(p.id),
+                "periodName": p.period_name,
+                "startDate": str(p.start_date),
+                "endDate": str(p.end_date),
+                "status": p.status,
+                "closedAt": p.closed_at.isoformat() if p.closed_at else None,
+                "fiscalYearId": str(p.fiscal_year_id) if p.fiscal_year_id else None,
+                "fiscalYearLabel": fy.label,
+            }
+            for p in periods
+        ],
+        "kpis": {
+            "totalRevenue": 0,
+            "totalExpenses": 0,
+            "netIncome": 0,
+            "entryCount": 0,
+        },
+        "revenueAccounts": [],
+        "topExpenseAccounts": [],
+        "closingChecklist": [],
+    }
+
+
+@router.post("/fiscal-years/{fy_id}/reopen")
+async def reopen_fiscal_year_endpoint(
+    fy_id: uuid.UUID,
+    req: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.account import FiscalYear
+    fy = await db.get(FiscalYear, fy_id)
+    if not fy:
+        raise HTTPException(status_code=404, detail="Fiscal year not found")
+    fy.is_closed = False
+    await db.commit()
+    await db.refresh(fy)
+    return {"success": True, "message": f"Fiscal year '{fy.label}' reopened."}
+
+
+@router.get("/periods")
+async def list_accounting_periods_endpoint(
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import select, and_, desc
+    from app.models.account import AccountingPeriod, FiscalYear
+    q = select(AccountingPeriod).where(AccountingPeriod.shop_id == shop_id).order_by(desc(AccountingPeriod.start_date))
+    res = await db.execute(q)
+    periods = res.scalars().all()
+
+    fy_ids = {p.fiscal_year_id for p in periods if p.fiscal_year_id}
+    fy_map = {}
+    if fy_ids:
+        fys_q = select(FiscalYear).where(FiscalYear.id.in_(fy_ids))
+        fys_res = await db.execute(fys_q)
+        fy_map = {fy.id: fy for fy in fys_res.scalars().all()}
+
+    return {
+        "success": True,
+        "periods": [
+            {
+                "id": str(p.id),
+                "periodName": p.period_name,
+                "startDate": str(p.start_date),
+                "endDate": str(p.end_date),
+                "status": p.status,
+                "closedAt": p.closed_at.isoformat() if p.closed_at else None,
+                "closedByName": None,
+                "fiscalYearId": str(p.fiscal_year_id) if p.fiscal_year_id else None,
+                "fiscalYearLabel": fy_map[p.fiscal_year_id].label if p.fiscal_year_id in fy_map else "Unassigned",
+                "fiscalYear": {
+                    "id": str(p.fiscal_year_id),
+                    "label": fy_map[p.fiscal_year_id].label,
+                } if p.fiscal_year_id in fy_map else None,
+            }
+            for p in periods
+        ],
+    }
+
+
+@router.get("/periods/{period_id}/details")
+async def get_period_details_endpoint(
+    period_id: uuid.UUID,
+    shop_id: Optional[uuid.UUID] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.account import AccountingPeriod
+    from app.models.journal import JournalEntry
+    p = await db.get(AccountingPeriod, period_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Accounting period not found")
+
+    je_q = select(JournalEntry).where(JournalEntry.period_id == period_id).limit(100)
+    res_je = await db.execute(je_q)
+    entries = res_je.scalars().all()
+
+    return {
+        "success": True,
+        "period": {
+            "id": str(p.id),
+            "periodName": p.period_name,
+            "startDate": str(p.start_date),
+            "endDate": str(p.end_date),
+            "status": p.status,
+            "closedAt": p.closed_at.isoformat() if p.closed_at else None,
+        },
+        "kpis": {
+            "entryCount": len(entries),
+            "totalRevenue": 0,
+            "totalExpenses": 0,
+            "netIncome": 0,
+            "isBalanced": True,
+            "totalDebits": 0,
+            "totalCredits": 0,
+        },
+        "journalEntries": entries,
+    }
+
+
+@router.post("/periods/{period_id}/close")
+async def close_period_endpoint(
+    period_id: uuid.UUID,
+    req: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.account import AccountingPeriod
+    p = await db.get(AccountingPeriod, period_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Accounting period not found")
+    p.status = "CLOSED"
+    p.closed_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(p)
+    return {"success": True, "message": f"Period '{p.period_name}' closed successfully."}
+
+
+@router.post("/periods/{period_id}/reopen")
+async def reopen_period_endpoint(
+    period_id: uuid.UUID,
+    req: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.account import AccountingPeriod
+    p = await db.get(AccountingPeriod, period_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Accounting period not found")
+    p.status = "OPEN"
+    p.closed_at = None
+    await db.commit()
+    await db.refresh(p)
+    return {"success": True, "message": f"Period '{p.period_name}' reopened."}
+
+
+@router.post("/activate-gl")
+async def activate_gl_endpoint(
+    req: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.identity import Shop
+    sid = uuid.UUID(req["shop_id"]) if isinstance(req["shop_id"], str) else req["shop_id"]
+    shop = await db.get(Shop, sid)
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    shop.is_gl_enabled = True
+    await db.commit()
+    return {"success": True, "message": "General Ledger activated successfully"}
+
+
+@router.post("/disable-onboarding")
+async def disable_onboarding_endpoint(
+    req: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.identity import Shop
+    sid = uuid.UUID(req["shop_id"]) if isinstance(req["shop_id"], str) else req["shop_id"]
+    shop = await db.get(Shop, sid)
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    shop.gl_onboarding_mode = False
+    await db.commit()
+    return {"success": True, "message": "Onboarding mode disabled"}
+
+
+@router.post("/run-gl-migration")
+async def run_gl_migration_endpoint(
+    req: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import and_
+    from app.models.identity import Shop
+    from app.models.account import ChartOfAccount
+    sid = uuid.UUID(req["shop_id"]) if isinstance(req["shop_id"], str) else req["shop_id"]
+    shop = await db.get(Shop, sid)
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    
+    default_accounts = [
+        {"code": "1000", "name": "Current Assets", "account_type": "ASSET", "is_system": True},
+        {"code": "1200", "name": "Cash and Bank", "account_type": "ASSET", "is_system": True},
+        {"code": "1300", "name": "Accounts Receivable", "account_type": "ASSET", "is_system": True},
+        {"code": "1400", "name": "Inventory Asset", "account_type": "ASSET", "is_system": True},
+        {"code": "2000", "name": "Current Liabilities", "account_type": "LIABILITY", "is_system": True},
+        {"code": "2100", "name": "Accounts Payable", "account_type": "LIABILITY", "is_system": True},
+        {"code": "2200", "name": "VAT Payable (Output VAT)", "account_type": "LIABILITY", "is_system": True},
+        {"code": "3000", "name": "Owner's Equity", "account_type": "EQUITY", "is_system": True},
+        {"code": "3100", "name": "Retained Earnings", "account_type": "EQUITY", "is_system": True},
+        {"code": "3200", "name": "Opening Balances Equity", "account_type": "EQUITY", "is_system": True},
+        {"code": "4000", "name": "Sales Revenue", "account_type": "REVENUE", "is_system": True},
+        {"code": "5000", "name": "Cost of Goods Sold (COGS)", "account_type": "EXPENSE", "is_system": True},
+        {"code": "6000", "name": "Operating Expenses", "account_type": "EXPENSE", "is_system": True},
+    ]
+
+    for da in default_accounts:
+        chk = await db.execute(
+            select(ChartOfAccount).where(
+                and_(ChartOfAccount.shop_id == sid, ChartOfAccount.code == da["code"])
+            )
+        )
+        if not chk.scalar_one_or_none():
+            acc = ChartOfAccount(
+                shop_id=sid,
+                code=da["code"],
+                name=da["name"],
+                account_type=da["account_type"],
+                is_system=da["is_system"],
+            )
+            db.add(acc)
+
+    shop.is_gl_enabled = True
+    await db.commit()
+    return {"success": True, "message": "General Ledger migration completed successfully"}
+
+
+@router.post("/compound-journal-entries", status_code=status.HTTP_201_CREATED)
+async def create_compound_journal_entry_endpoint(
+    req: dict,
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.journal import JournalEntry
+
+    lines = req.get("lines") or []
+    if not lines:
+        raise HTTPException(status_code=400, detail="Journal entry lines required")
+
+    entry_date = datetime.fromisoformat(req["entry_date"]) if req.get("entry_date") else datetime.utcnow()
+    desc_text = (req.get("description") or "Compound Journal Entry").strip()
+    ref_num = req.get("reference_number")
+    cc_id = uuid.UUID(req["cost_center_id"]) if req.get("cost_center_id") else None
+
+    debits = [l for l in lines if Decimal(str(l.get("debit_amount") or 0)) > 0]
+    credits = [l for l in lines if Decimal(str(l.get("credit_amount") or 0)) > 0]
+
+    if not debits or not credits:
+        raise HTTPException(status_code=400, detail="Compound entry must contain both debits and credits")
+
+    created_entries = []
+    if len(debits) == 1:
+        d_acc = uuid.UUID(debits[0]["account_id"])
+        for c in credits:
+            amt = Decimal(str(c.get("credit_amount") or 0))
+            je = JournalEntry(
+                shop_id=shop_id,
+                entry_date=entry_date,
+                description=c.get("line_description") or desc_text,
+                debit_account_id=d_acc,
+                credit_account_id=uuid.UUID(c["account_id"]),
+                amount=amt,
+                reference_number=ref_num,
+                cost_center_id=cc_id,
+                source_type="manual",
+            )
+            db.add(je)
+            created_entries.append(je)
+    elif len(credits) == 1:
+        c_acc = uuid.UUID(credits[0]["account_id"])
+        for d in debits:
+            amt = Decimal(str(d.get("debit_amount") or 0))
+            je = JournalEntry(
+                shop_id=shop_id,
+                entry_date=entry_date,
+                description=d.get("line_description") or desc_text,
+                debit_account_id=uuid.UUID(d["account_id"]),
+                credit_account_id=c_acc,
+                amount=amt,
+                reference_number=ref_num,
+                cost_center_id=cc_id,
+                source_type="manual",
+            )
+            db.add(je)
+            created_entries.append(je)
+    else:
+        for d in debits:
+            amt = Decimal(str(d.get("debit_amount") or 0))
+            c_acc = uuid.UUID(credits[0]["account_id"])
+            je = JournalEntry(
+                shop_id=shop_id,
+                entry_date=entry_date,
+                description=d.get("line_description") or desc_text,
+                debit_account_id=uuid.UUID(d["account_id"]),
+                credit_account_id=c_acc,
+                amount=amt,
+                reference_number=ref_num,
+                cost_center_id=cc_id,
+                source_type="manual",
+            )
+            db.add(je)
+            created_entries.append(je)
+
+    await db.commit()
+    return {"success": True, "count": len(created_entries), "reference": ref_num}
+
+
+@router.post("/opening-balances", status_code=status.HTTP_201_CREATED)
+async def create_opening_balances_endpoint(
+    req: dict,
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import and_
+    from app.models.journal import JournalEntry
+    from app.models.account import ChartOfAccount
+
+    as_of = datetime.fromisoformat(req["as_of_date"]) if req.get("as_of_date") else datetime.utcnow()
+    lines = req.get("lines") or []
+
+    eq_q = select(ChartOfAccount).where(
+        and_(ChartOfAccount.shop_id == shop_id, ChartOfAccount.code == "3200")
+    )
+    eq_acc = (await db.execute(eq_q)).scalar_one_or_none()
+    if not eq_acc:
+        eq_acc = ChartOfAccount(
+            shop_id=shop_id,
+            code="3200",
+            name="Opening Balances Equity",
+            account_type="EQUITY",
+            is_system=True,
+        )
+        db.add(eq_acc)
+        await db.flush()
+
+    entries = []
+    for line in lines:
+        acc_id = uuid.UUID(line["accountId"]) if line.get("accountId") else None
+        if not acc_id or acc_id == eq_acc.id:
+            continue
+        debit = Decimal(str(line.get("debit") or 0))
+        credit = Decimal(str(line.get("credit") or 0))
+
+        if debit > 0:
+            je = JournalEntry(
+                shop_id=shop_id,
+                entry_date=as_of,
+                description="Opening Balance for Account",
+                debit_account_id=acc_id,
+                credit_account_id=eq_acc.id,
+                amount=debit,
+                reference_number="OPENING-BALANCES",
+                source_type="opening_balance",
+            )
+            db.add(je)
+            entries.append(je)
+        elif credit > 0:
+            je = JournalEntry(
+                shop_id=shop_id,
+                entry_date=as_of,
+                description="Opening Balance for Account",
+                debit_account_id=eq_acc.id,
+                credit_account_id=acc_id,
+                amount=credit,
+                reference_number="OPENING-BALANCES",
+                source_type="opening_balance",
+            )
+            db.add(je)
+            entries.append(je)
+
+    await db.commit()
+    return {"success": True, "createdCount": len(entries)}
+
+
+

@@ -53,3 +53,35 @@ async def update_client_endpoint(
     if not client:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
     return client
+
+
+@router.delete("/{client_id}")
+async def delete_client_endpoint(
+    client_id: uuid.UUID,
+    shop_id: Optional[uuid.UUID] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.client import Client
+    client = await db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    await db.delete(client)
+    await db.commit()
+    return {"success": True, "message": "Client deleted successfully"}
+
+
+@router.get("/{client_id}/statement")
+async def get_client_statement_endpoint(
+    client_id: uuid.UUID,
+    shop_id: Optional[uuid.UUID] = Query(None),
+    period: str = Query("ALL"),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.modules.reports.service import get_client_statement
+    from app.models.client import Client
+    client = await db.get(Client, client_id)
+    if not client:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    target_shop_id = shop_id or client.shop_id
+    return await get_client_statement(db, shop_id=target_shop_id, client_id=client_id, period=period)
+

@@ -2,22 +2,57 @@ import uuid
 import secrets
 from datetime import datetime, date
 from decimal import Decimal
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc
+from sqlalchemy import select, and_, desc, func
 
 from app.db.session import get_db
+from app.core.config import get_settings
 from app.models.identity import User, Shop
 from app.models.client import Client
+from app.models.document import Document, DocumentItem
 from app.models.crm import (
     Deal, DealActivity, Proposal, ProposalItem, ProposalToken,
     Contract, ContractHoursLog, Project, ProjectMember, Timesheet, ProjectMilestone
 )
 from app.modules.auth.service import verify_and_get_session
 
+settings = get_settings()
+
 router = APIRouter(tags=["CRM, Proposals, Contracts & Projects"])
+
+
+async def _verify_auth(
+    x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
+    authorization: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db),
+):
+    if x_internal_key and x_internal_key == settings.INTERNAL_API_KEY:
+        return True
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split()[1]
+        user = await verify_and_get_session(db, token)
+        if user:
+            return user
+        if not settings.is_production:
+            return True
+    if not settings.is_production:
+        return True
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+async def _resolve_shop_id(db: AsyncSession, shop_id: Optional[str] = None, shop_slug: Optional[str] = None) -> Optional[uuid.UUID]:
+    if shop_id:
+        try:
+            return uuid.UUID(shop_id)
+        except ValueError:
+            pass
+    if shop_slug:
+        res = await db.execute(select(Shop.id).where(Shop.slug == shop_slug))
+        return res.scalar_one_or_none()
+    return None
 
 
 # -------------------------------------------------------------------------
@@ -60,7 +95,7 @@ class CreateProposalRequest(BaseModel):
     client_id: Optional[str] = None
     title: str
     currency: str = "KES"
-    items: List[CreateProposalItemRequest]
+    items: List[CreateProposalItemRequest] = []
     valid_until: Optional[str] = None
     notes: Optional[str] = None
     terms_and_conditions: Optional[str] = None
@@ -107,37 +142,49 @@ class CreateProjectRequest(BaseModel):
 # -------------------------------------------------------------------------
 @router.get("/crm/deals")
 async def list_deals(
-    shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    shop_id: Optional[str] = Query(None),
+    shop_slug: Optional[str] = Query(None),
+    auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    sid = await _resolve_shop_id(db, shop_id, shop_slug)
+    if not sid:
+        return {"success": True, "deals": []}
 
-    q = select(Deal).where(Deal.shop_id == shop_id).order_by(desc(Deal.created_at))
+    q = select(Deal).where(Deal.shop_id == sid).order_by(desc(Deal.created_at))
     res = await db.execute(q)
     deals = res.scalars().all()
     return {"success": True, "deals": deals}
 
 
+@router.get("/crm/deals/{deal_id}")
+async def get_deal(
+    deal_id: uuid.UUID,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    deal = await db.get(Deal, deal_id)
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    
+    # fetch activities
+    act_q = select(DealActivity).where(DealActivity.deal_id == deal_id).order_by(desc(DealActivity.created_at))
+    activities = (await db.execute(act_q)).scalars().all()
+    return {"success": True, "deal": deal, "activities": activities}
+
+
 @router.post("/crm/deals")
 async def create_deal(
     req: CreateDealRequest,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
+    user_id = auth.id if hasattr(auth, "id") else None
     c_date = date.fromisoformat(req.close_date) if req.close_date else None
     deal = Deal(
         shop_id=uuid.UUID(req.shop_id),
         client_id=uuid.UUID(req.client_id) if req.client_id else None,
-        assigned_user_id=user.id,
+        assigned_user_id=user_id,
         title=req.title.strip(),
         value=req.value,
         currency=req.currency.upper(),
@@ -152,39 +199,90 @@ async def create_deal(
 
 
 @router.patch("/crm/deals/{deal_id}")
+@router.patch("/crm/deals/{deal_id}/stage")
 async def update_deal(
-    deal_id: str,
-    req: UpdateDealRequest,
-    shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    deal_id: uuid.UUID,
+    req: dict,
+    shop_id: Optional[str] = Query(None),
+    auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    q = select(Deal).where(Deal.id == deal_id, Deal.shop_id == shop_id)
-    res = await db.execute(q)
-    deal = res.scalar_one_or_none()
+    deal = await db.get(Deal, deal_id)
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
 
-    if req.title is not None:
-        deal.title = req.title.strip()
-    if req.value is not None:
-        deal.value = req.value
-    if req.stage is not None:
-        deal.stage = req.stage
-    if req.probability is not None:
-        deal.probability = req.probability
-    if req.close_date is not None:
-        deal.close_date = date.fromisoformat(req.close_date) if req.close_date else None
-    if req.lost_reason is not None:
-        deal.lost_reason = req.lost_reason.strip() if req.lost_reason else None
+    if "stage" in req and req["stage"]:
+        deal.stage = req["stage"]
+    if "title" in req and req["title"]:
+        deal.title = req["title"].strip()
+    if "value" in req:
+        deal.value = Decimal(str(req["value"]))
+    if "probability" in req:
+        deal.probability = int(req["probability"])
+    if "lost_reason" in req or "lostReason" in req:
+        deal.lost_reason = req.get("lost_reason") or req.get("lostReason")
 
     await db.commit()
-    return {"success": True}
+    await db.refresh(deal)
+    return {"success": True, "deal": deal}
+
+
+@router.post("/crm/deals/{deal_id}/activities")
+async def add_deal_activity(
+    deal_id: uuid.UUID,
+    req: dict,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    deal = await db.get(Deal, deal_id)
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    user_id = auth.id if hasattr(auth, "id") else None
+    activity_type = req.get("type") or req.get("activity_type") or "NOTE"
+    desc = req.get("description") or req.get("notes") or ""
+
+    act = DealActivity(
+        deal_id=deal_id,
+        shop_id=deal.shop_id,
+        user_id=user_id,
+        activity_type=activity_type,
+        notes=desc,
+    )
+    db.add(act)
+    await db.commit()
+    await db.refresh(act)
+    return {"success": True, "activity": act}
+
+
+@router.get("/crm/forecast")
+async def get_crm_forecast(
+    shop_id: Optional[str] = Query(None),
+    shop_slug: Optional[str] = Query(None),
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    sid = await _resolve_shop_id(db, shop_id, shop_slug)
+    if not sid:
+        return {"totalPipeline": 0.0, "weightedForecast": 0.0, "stages": {}}
+
+    q = select(Deal).where(and_(Deal.shop_id == sid, Deal.stage.notin_(["LOST"])))
+    deals = (await db.execute(q)).scalars().all()
+
+    pipeline_total = sum(float(d.value) for d in deals)
+    weighted_total = sum(float(d.value) * (d.probability / 100.0) for d in deals)
+
+    stages = {}
+    for d in deals:
+        stages[d.stage] = stages.get(d.stage, 0.0) + float(d.value)
+
+    return {
+        "success": True,
+        "totalPipeline": pipeline_total,
+        "weightedForecast": round(weighted_total, 2),
+        "dealsCount": len(deals),
+        "stages": stages,
+    }
 
 
 # -------------------------------------------------------------------------
@@ -192,39 +290,50 @@ async def update_deal(
 # -------------------------------------------------------------------------
 @router.get("/crm/proposals")
 async def list_proposals(
-    shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    shop_id: Optional[str] = Query(None),
+    shop_slug: Optional[str] = Query(None),
+    auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    sid = await _resolve_shop_id(db, shop_id, shop_slug)
+    if not sid:
+        return {"success": True, "proposals": []}
 
-    q = select(Proposal).where(Proposal.shop_id == shop_id).order_by(desc(Proposal.created_at))
+    q = select(Proposal).where(Proposal.shop_id == sid).order_by(desc(Proposal.created_at))
     res = await db.execute(q)
     proposals = res.scalars().all()
     return {"success": True, "proposals": proposals}
 
 
+@router.get("/crm/proposals/{proposal_id}")
+async def get_proposal(
+    proposal_id: uuid.UUID,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    prop = await db.get(Proposal, proposal_id)
+    if not prop:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    
+    items_q = select(ProposalItem).where(ProposalItem.proposal_id == proposal_id).order_by(ProposalItem.display_order)
+    items = (await db.execute(items_q)).scalars().all()
+
+    token_q = select(ProposalToken.token).where(ProposalToken.proposal_id == proposal_id)
+    token = (await db.execute(token_q)).scalar_one_or_none()
+
+    return {"success": True, "proposal": prop, "items": items, "publicToken": token}
+
+
 @router.post("/crm/proposals")
 async def create_proposal(
     req: CreateProposalRequest,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
     now = datetime.utcnow()
     proposal_number = f"PROP-{now.strftime('%y%m')}-{secrets.randbelow(9000) + 1000}"
 
-    subtotal = sum((it.quantity * it.unit_price) - it.discount_amount for it in req.items)
-    tax_total = sum(it.tax_amount for it in req.items)
-    grand_total = subtotal + tax_total
-
+    subtotal = sum((it.quantity * it.unit_price) - it.discount_amount for it in req.items) if req.items else Decimal("0.00")
     v_until = date.fromisoformat(req.valid_until) if req.valid_until else None
 
     prop = Proposal(
@@ -254,7 +363,6 @@ async def create_proposal(
         )
         db.add(p_item)
 
-    # Generate public access token
     guest_token = secrets.token_hex(24)
     p_token = ProposalToken(proposal_id=prop.id, token=guest_token)
     db.add(p_token)
@@ -263,83 +371,177 @@ async def create_proposal(
     return {"success": True, "proposalId": str(prop.id), "token": guest_token, "proposalNumber": prop.proposal_number}
 
 
-# -------------------------------------------------------------------------
-# PUBLIC GUEST PROPOSAL ACCESS (NO LOGIN REQUIRED)
-# -------------------------------------------------------------------------
+@router.post("/crm/proposals/{proposal_id}/send")
+async def send_proposal(
+    proposal_id: uuid.UUID,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    prop = await db.get(Proposal, proposal_id)
+    if not prop:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    prop.status = "SENT"
+    prop.sent_at = datetime.utcnow()
+    await db.commit()
+    return {"success": True, "message": "Proposal marked as sent"}
+
+
+@router.post("/crm/proposals/{proposal_id}/convert")
+async def convert_proposal_to_invoice(
+    proposal_id: uuid.UUID,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    prop = await db.get(Proposal, proposal_id)
+    if not prop:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+
+    items_q = select(ProposalItem).where(ProposalItem.proposal_id == proposal_id)
+    items = (await db.execute(items_q)).scalars().all()
+
+    now = datetime.utcnow()
+    doc_number = f"INV-{now.strftime('%y%m')}-{secrets.randbelow(9000)+1000}"
+
+    doc = Document(
+        shop_id=prop.shop_id,
+        client_id=prop.client_id,
+        type="INVOICE",
+        doc_number=doc_number,
+        status="DRAFT",
+        currency=prop.currency,
+        sub_total=prop.subtotal,
+        tax_amount=Decimal("0.00"),
+        grand_total=prop.subtotal,
+        notes=f"Converted from Proposal #{prop.proposal_number}",
+        issue_date=now,
+    )
+    db.add(doc)
+    await db.flush()
+
+    for it in items:
+        di = DocumentItem(
+            document_id=doc.id,
+            description=it.description,
+            quantity=it.quantity,
+            unit_price=it.unit_price,
+            tax_type="EXEMPT",
+            tax_amount=Decimal("0.00"),
+            item_total=it.item_total,
+        )
+        db.add(di)
+
+    prop.converted_document_id = doc.id
+    await db.commit()
+    return {"success": True, "documentId": str(doc.id), "docNumber": doc.doc_number}
+
+
+@router.post("/crm/proposals/public/{token}/view")
+async def record_public_proposal_view(
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    token_q = select(ProposalToken).where(ProposalToken.token == token)
+    pt = (await db.execute(token_q)).scalar_one_or_none()
+    if not pt:
+        raise HTTPException(status_code=404, detail="Proposal token not found")
+
+    prop = await db.get(Proposal, pt.proposal_id)
+    if prop:
+        prop.view_count = (prop.view_count or 0) + 1
+        prop.viewed_at = datetime.utcnow()
+        if prop.status == "SENT":
+            prop.status = "VIEWED"
+        await db.commit()
+
+    return {"success": True, "message": "Proposal view recorded"}
+
+
 @router.get("/crm/proposals/public/{token}")
 async def get_public_proposal(
     token: str,
     db: AsyncSession = Depends(get_db),
 ):
-    q_token = select(ProposalToken).where(ProposalToken.token == token)
-    res_token = await db.execute(q_token)
-    p_token = res_token.scalar_one_or_none()
-    if not p_token:
-        raise HTTPException(status_code=404, detail="Proposal not found or link expired")
+    token_q = select(ProposalToken).where(ProposalToken.token == token)
+    pt = (await db.execute(token_q)).scalar_one_or_none()
+    if not pt:
+        raise HTTPException(status_code=404, detail="Proposal token not found")
 
-    q_prop = select(Proposal, Shop).join(Shop, Proposal.shop_id == Shop.id).where(Proposal.id == p_token.proposal_id)
-    res_prop = await db.execute(q_prop)
-    row = res_prop.first()
-    if not row:
+    prop = await db.get(Proposal, pt.proposal_id)
+    if not prop:
         raise HTTPException(status_code=404, detail="Proposal not found")
-    prop, shop = row
 
-    q_items = select(ProposalItem).where(ProposalItem.proposal_id == prop.id)
-    res_items = await db.execute(q_items)
-    items = res_items.scalars().all()
+    items_q = select(ProposalItem).where(ProposalItem.proposal_id == prop.id)
+    items = (await db.execute(items_q)).scalars().all()
 
-    return {
-        "success": True,
-        "proposal": {
-            "id": str(prop.id),
-            "proposalNumber": prop.proposal_number,
-            "title": prop.title,
-            "currency": prop.currency,
-            "subtotal": float(prop.subtotal),
-            "taxTotal": float(prop.tax_total),
-            "grandTotal": float(prop.grand_total),
-            "status": prop.status,
-            "validUntil": prop.valid_until.isoformat() if prop.valid_until else None,
-            "notes": prop.notes,
-            "termsAndConditions": prop.terms_and_conditions,
-        },
-        "shop": {
-            "name": shop.name,
-            "currency": shop.currency,
-            "phone": shop.phone,
-            "email": shop.email,
-        },
+    shop = await db.get(Shop, prop.shop_id)
+    client = await db.get(Client, prop.client_id) if prop.client_id else None
+
+    proposal_data = {
+        "id": str(prop.id),
+        "proposalNumber": prop.proposal_number,
+        "title": prop.title,
+        "status": prop.status,
+        "subtotal": float(prop.subtotal),
+        "currency": prop.currency,
+        "validUntil": prop.valid_until.isoformat() if prop.valid_until else None,
+        "executiveSummary": prop.executive_summary,
+        "termsConditions": prop.terms_and_conditions,
+        "isAmendmentRequested": bool(prop.amendment_notes),
+        "amendmentNotes": prop.amendment_notes,
+        "signedAt": prop.responded_at.isoformat() if prop.responded_at else None,
+        "signedByName": prop.signer_name,
         "items": [
             {
+                "id": str(it.id),
+                "tier": it.package_label or "STANDARD",
+                "packageLabel": it.package_label,
                 "description": it.description,
+                "notes": it.notes,
                 "quantity": float(it.quantity),
                 "unitPrice": float(it.unit_price),
                 "itemTotal": float(it.item_total),
+                "isOptional": False,
+                "isSelected": True,
             }
             for it in items
         ],
+        "shop": {
+            "name": shop.name if shop else "",
+            "currency": shop.currency if shop else "KES",
+            "logoUrl": shop.logo_url if shop else None,
+            "email": shop.email if shop else None,
+            "phone": shop.phone if shop else None,
+        } if shop else None,
+        "client": {
+            "name": client.name if client else "",
+            "email": client.email if client else None,
+        } if client else None,
     }
+    return {"success": True, "proposal": proposal_data}
 
 
 @router.post("/crm/proposals/public/{token}/accept")
 async def accept_public_proposal(
     token: str,
+    payload: Optional[dict] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    q_token = select(ProposalToken).where(ProposalToken.token == token)
-    res_token = await db.execute(q_token)
-    p_token = res_token.scalar_one_or_none()
-    if not p_token:
-        raise HTTPException(status_code=404, detail="Proposal link expired")
+    token_q = select(ProposalToken).where(ProposalToken.token == token)
+    pt = (await db.execute(token_q)).scalar_one_or_none()
+    if not pt:
+        raise HTTPException(status_code=404, detail="Proposal token not found")
 
-    q_prop = select(Proposal).where(Proposal.id == p_token.proposal_id)
-    res_prop = await db.execute(q_prop)
-    prop = res_prop.scalar_one_or_none()
+    prop = await db.get(Proposal, pt.proposal_id)
     if not prop:
         raise HTTPException(status_code=404, detail="Proposal not found")
 
     prop.status = "ACCEPTED"
-    prop.accepted_at = datetime.utcnow()
+    prop.responded_at = datetime.utcnow()
+    if payload:
+        if payload.get("signer_name") or payload.get("signerName"):
+            prop.signer_name = payload.get("signer_name") or payload.get("signerName")
+        if payload.get("signature_data") or payload.get("signatureData"):
+            prop.signature_data_url = payload.get("signature_data") or payload.get("signatureData")
     await db.commit()
     return {"success": True, "message": "Proposal accepted successfully"}
 
@@ -349,16 +551,16 @@ async def accept_public_proposal(
 # -------------------------------------------------------------------------
 @router.get("/crm/contracts")
 async def list_contracts(
-    shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    shop_id: Optional[str] = Query(None),
+    shop_slug: Optional[str] = Query(None),
+    auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    sid = await _resolve_shop_id(db, shop_id, shop_slug)
+    if not sid:
+        return {"success": True, "contracts": []}
 
-    q = select(Contract).where(Contract.shop_id == shop_id).order_by(desc(Contract.created_at))
+    q = select(Contract).where(Contract.shop_id == sid).order_by(desc(Contract.created_at))
     res = await db.execute(q)
     contracts = res.scalars().all()
     return {"success": True, "contracts": contracts}
@@ -366,36 +568,37 @@ async def list_contracts(
 
 @router.post("/crm/contracts")
 async def create_contract(
-    req: CreateContractRequest,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    req: dict,
+    auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    sid = await _resolve_shop_id(db, req.get("shop_id"))
+    if not sid:
+        raise HTTPException(status_code=400, detail="Shop ID required")
 
+    cid = uuid.UUID(req["client_id"]) if req.get("client_id") else None
+    deal_id = uuid.UUID(req["deal_id"]) if req.get("deal_id") else None
     now = datetime.utcnow()
-    contract_number = f"CNT-{now.strftime('%y%m')}-{secrets.randbelow(9000) + 1000}"
+    c_num = req.get("contract_number") or f"CTR-{now.strftime('%y%m')}-{secrets.randbelow(9000)+1000}"
 
-    s_date = date.fromisoformat(req.start_date)
-    e_date = date.fromisoformat(req.end_date) if req.end_date else None
+    s_date = datetime.strptime(req["start_date"][:10], "%Y-%m-%d").date() if req.get("start_date") else now.date()
+    e_date = datetime.strptime(req["end_date"][:10], "%Y-%m-%d").date() if req.get("end_date") else None
 
     contract = Contract(
-        shop_id=uuid.UUID(req.shop_id),
-        client_id=uuid.UUID(req.client_id) if req.client_id else None,
-        deal_id=uuid.UUID(req.deal_id) if req.deal_id else None,
-        contract_number=contract_number,
-        title=req.title.strip(),
-        currency=req.currency.upper(),
-        status="ACTIVE",
-        monthly_fee=req.monthly_fee,
-        is_retainer_hours=req.is_retainer_hours,
-        monthly_hours_allocated=req.monthly_hours_allocated,
-        hourly_rate=req.hourly_rate,
+        shop_id=sid,
+        client_id=cid,
+        deal_id=deal_id,
+        contract_number=c_num,
+        title=(req.get("title") or "Contract").strip(),
+        description=req.get("description"),
+        currency=(req.get("currency") or "KES").upper(),
+        monthly_fee=Decimal(str(req.get("monthly_fee") or 0)),
+        is_retainer_hours=bool(req.get("is_retainer_hours", False)),
+        monthly_hours_allocated=Decimal(str(req.get("monthly_hours_allocated") or 0)),
+        hourly_rate=Decimal(str(req.get("hourly_rate") or 0)),
         start_date=s_date,
         end_date=e_date,
-        terms_and_conditions=req.terms_and_conditions.strip() if req.terms_and_conditions else None,
+        status="ACTIVE",
     )
     db.add(contract)
     await db.commit()
@@ -403,59 +606,397 @@ async def create_contract(
     return {"success": True, "contract": contract}
 
 
-# -------------------------------------------------------------------------
-# PROJECTS ENDPOINTS
-# -------------------------------------------------------------------------
-@router.get("/crm/projects")
-async def list_projects(
-    shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+@router.get("/crm/contracts/{contract_id}")
+async def get_contract(
+    contract_id: uuid.UUID,
+    auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    c = await db.get(Contract, contract_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    
+    # fetch logged hours
+    h_q = select(ContractHoursLog).where(ContractHoursLog.contract_id == contract_id).order_by(desc(ContractHoursLog.log_date))
+    hours = (await db.execute(h_q)).scalars().all()
+    return {"success": True, "contract": c, "hours": hours}
 
-    q = select(Project).where(Project.shop_id == shop_id).order_by(desc(Project.created_at))
+
+@router.get("/crm/contracts/{contract_id}/burndown")
+async def get_contract_burndown(
+    contract_id: uuid.UUID,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    c = await db.get(Contract, contract_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    h_q = (
+        select(
+            ContractHoursLog.billing_month,
+            func.sum(ContractHoursLog.hours_used).label("total_hours"),
+        )
+        .where(ContractHoursLog.contract_id == contract_id)
+        .group_by(ContractHoursLog.billing_month)
+        .order_by(desc(ContractHoursLog.billing_month))
+    )
+    res = await db.execute(h_q)
+    rows = res.all()
+
+    allocated = float(c.monthly_hours_allocated)
+    history = [
+        {
+            "month": r[0],
+            "hoursUsed": float(r[1]),
+            "hoursAllocated": allocated,
+            "variance": allocated - float(r[1]),
+        }
+        for r in rows
+    ]
+    return {
+        "success": True,
+        "contractId": str(c.id),
+        "isRetainerHours": c.is_retainer_hours,
+        "allocatedPerMonth": allocated,
+        "burndownHistory": history,
+    }
+
+
+@router.post("/crm/contracts/{contract_id}/hours")
+async def log_contract_hours(
+    contract_id: uuid.UUID,
+    req: LogContractHoursRequest,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    c = await db.get(Contract, contract_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    user_id = auth.id if hasattr(auth, "id") else None
+    l_date = date.fromisoformat(req.log_date) if req.log_date else date.today()
+
+    entry = ContractHoursLog(
+        contract_id=contract_id,
+        shop_id=c.shop_id,
+        logged_by_user_id=user_id,
+        billing_month=req.billing_month,
+        hours_used=req.hours_used,
+        description=req.description,
+        log_date=l_date,
+    )
+    db.add(entry)
+    await db.commit()
+    await db.refresh(entry)
+    return {"success": True, "log": entry}
+
+
+# -------------------------------------------------------------------------
+# PROJECTS, MILESTONES & TIMESHEETS ENDPOINTS
+# -------------------------------------------------------------------------
+@router.get("/projects")
+@router.get("/crm/projects")
+async def list_projects(
+    shop_id: Optional[str] = Query(None),
+    shop_slug: Optional[str] = Query(None),
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    sid = await _resolve_shop_id(db, shop_id, shop_slug)
+    if not sid:
+        return {"success": True, "projects": []}
+
+    q = select(Project).where(Project.shop_id == sid).order_by(desc(Project.created_at))
     res = await db.execute(q)
     projects = res.scalars().all()
     return {"success": True, "projects": projects}
 
 
+@router.post("/projects")
 @router.post("/crm/projects")
 async def create_project(
-    req: CreateProjectRequest,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    req: dict,
+    auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    sid = await _resolve_shop_id(db, req.get("shop_id"))
+    if not sid:
+        raise HTTPException(status_code=400, detail="Shop ID required")
 
+    cid = uuid.UUID(req["client_id"]) if req.get("client_id") else None
+    deal_id = uuid.UUID(req["deal_id"]) if req.get("deal_id") else None
+    contract_id = uuid.UUID(req["contract_id"]) if req.get("contract_id") else None
     now = datetime.utcnow()
-    project_code = f"PRJ-{now.strftime('%y%m')}-{secrets.randbelow(9000) + 1000}"
+    p_code = req.get("project_code") or req.get("code") or f"PRJ-{now.strftime('%y%m')}-{secrets.randbelow(9000)+1000}"
 
-    s_date = date.fromisoformat(req.start_date) if req.start_date else None
-    e_date = date.fromisoformat(req.end_date) if req.end_date else None
+    s_date = datetime.strptime(req["start_date"][:10], "%Y-%m-%d").date() if req.get("start_date") else now.date()
+    e_date = datetime.strptime(req["end_date"][:10], "%Y-%m-%d").date() if req.get("end_date") else None
 
     proj = Project(
-        shop_id=uuid.UUID(req.shop_id),
-        client_id=uuid.UUID(req.client_id) if req.client_id else None,
-        contract_id=uuid.UUID(req.contract_id) if req.contract_id else None,
-        project_code=project_code,
-        name=req.name.strip(),
-        description=req.description.strip() if req.description else None,
-        currency=req.currency.upper(),
-        status="ACTIVE",
-        budget_type=req.budget_type,
-        budget_amount=req.budget_amount,
-        budget_hours=req.budget_hours,
+        shop_id=sid,
+        client_id=cid,
+        deal_id=deal_id,
+        contract_id=contract_id,
+        project_code=p_code,
+        name=(req.get("name") or "Project").strip(),
+        description=req.get("description"),
+        currency=(req.get("currency") or "KES").upper(),
+        budget_type="FIXED",
+        budget_hours=Decimal(str(req.get("budget_hours") or 0)),
+        budget_amount=Decimal(str(req.get("budget_amount") or 0)),
         start_date=s_date,
         end_date=e_date,
+        status="PLANNING",
     )
     db.add(proj)
     await db.commit()
     await db.refresh(proj)
     return {"success": True, "project": proj}
+
+
+@router.get("/projects/{project_id}")
+@router.get("/crm/projects/{project_id}")
+async def get_project(
+    project_id: uuid.UUID,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    proj = await db.get(Project, project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # milestones
+    m_q = select(ProjectMilestone).where(ProjectMilestone.project_id == project_id).order_by(ProjectMilestone.display_order)
+    milestones = (await db.execute(m_q)).scalars().all()
+
+    # timesheets
+    t_q = select(Timesheet).where(Timesheet.project_id == project_id).order_by(desc(Timesheet.work_date))
+    timesheets = (await db.execute(t_q)).scalars().all()
+
+    return {"success": True, "project": proj, "milestones": milestones, "timesheets": timesheets}
+
+
+@router.post("/crm/projects/{project_id}/milestones")
+async def create_project_milestone(
+    project_id: uuid.UUID,
+    req: dict,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    proj = await db.get(Project, project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    amount = Decimal(str(req.get("amount", 0)))
+    due_date = date.fromisoformat(req["due_date"]) if req.get("due_date") else None
+
+    milestone = ProjectMilestone(
+        project_id=project_id,
+        shop_id=proj.shop_id,
+        title=req["title"].strip(),
+        description=req.get("description"),
+        amount=amount,
+        currency=proj.currency,
+        due_date=due_date,
+        status="PENDING",
+    )
+    db.add(milestone)
+    await db.commit()
+    await db.refresh(milestone)
+    return {"success": True, "milestone": milestone}
+
+
+@router.patch("/crm/projects/{project_id}/milestones/{milestone_id}/status")
+async def update_milestone_status(
+    project_id: uuid.UUID,
+    milestone_id: uuid.UUID,
+    req: dict,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    m = await db.get(ProjectMilestone, milestone_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Milestone not found")
+    
+    m.status = req.get("status", "COMPLETED")
+    if m.status == "COMPLETED":
+        m.completed_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(m)
+    return {"success": True, "milestone": m}
+
+
+@router.post("/crm/projects/{project_id}/milestones/{milestone_id}/convert")
+async def convert_milestone_to_invoice(
+    project_id: uuid.UUID,
+    milestone_id: uuid.UUID,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    m = await db.get(ProjectMilestone, milestone_id)
+    proj = await db.get(Project, project_id)
+    if not m or not proj:
+        raise HTTPException(status_code=404, detail="Milestone or Project not found")
+
+    now = datetime.utcnow()
+    doc_num = f"INV-MLS-{now.strftime('%y%m')}-{secrets.randbelow(9000)+1000}"
+
+    doc = Document(
+        shop_id=proj.shop_id,
+        client_id=proj.client_id,
+        type="INVOICE",
+        doc_number=doc_num,
+        status="DRAFT",
+        currency=m.currency,
+        sub_total=m.amount,
+        tax_amount=Decimal("0.00"),
+        grand_total=m.amount,
+        notes=f"Milestone Billing: {m.title} [{proj.name}]",
+        issue_date=now,
+    )
+    db.add(doc)
+    await db.flush()
+
+    di = DocumentItem(
+        document_id=doc.id,
+        description=f"{proj.name} - Milestone: {m.title}",
+        quantity=Decimal("1.00"),
+        unit_price=m.amount,
+        tax_type="EXEMPT",
+        tax_amount=Decimal("0.00"),
+        item_total=m.amount,
+    )
+    db.add(di)
+
+    m.status = "INVOICED"
+    m.invoiced_document_id = doc.id
+    await db.commit()
+    return {"success": True, "documentId": str(doc.id), "docNumber": doc.doc_number}
+
+
+@router.post("/crm/projects/{project_id}/timesheets")
+async def create_timesheet_entry(
+    project_id: uuid.UUID,
+    req: dict,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    proj = await db.get(Project, project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    user_id = auth.id if hasattr(auth, "id") else None
+    hours = Decimal(str(req.get("hours_logged", req.get("hours", 1))))
+    rate = Decimal(str(req.get("billable_rate", 0)))
+    w_date = date.fromisoformat(req["work_date"]) if req.get("work_date") else date.today()
+
+    ts = Timesheet(
+        project_id=project_id,
+        shop_id=proj.shop_id,
+        user_id=user_id,
+        work_date=w_date,
+        hours_logged=hours,
+        task_description=req.get("task_description", req.get("description", "Work item")),
+        is_billable=bool(req.get("is_billable", True)),
+        billable_rate=rate,
+        billable_amount=hours * rate,
+        status="DRAFT",
+    )
+    db.add(ts)
+    await db.commit()
+    await db.refresh(ts)
+    return {"success": True, "timesheet": ts}
+
+
+@router.post("/crm/projects/{project_id}/timesheets/{ts_id}/submit")
+async def submit_timesheet(
+    project_id: uuid.UUID,
+    ts_id: uuid.UUID,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    ts = await db.get(Timesheet, ts_id)
+    if not ts:
+        raise HTTPException(status_code=404, detail="Timesheet not found")
+    ts.status = "SUBMITTED"
+    await db.commit()
+    return {"success": True, "message": "Timesheet submitted for approval"}
+
+
+@router.post("/crm/projects/{project_id}/timesheets/{ts_id}/review")
+async def review_timesheet(
+    project_id: uuid.UUID,
+    ts_id: uuid.UUID,
+    req: dict,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    ts = await db.get(Timesheet, ts_id)
+    if not ts:
+        raise HTTPException(status_code=404, detail="Timesheet not found")
+    
+    decision = req.get("action", req.get("status", "APPROVED")).upper()
+    ts.status = "APPROVED" if decision == "APPROVED" else "REJECTED"
+    ts.review_notes = req.get("notes") or req.get("reason")
+    await db.commit()
+    return {"success": True, "status": ts.status}
+
+
+@router.post("/crm/projects/{project_id}/timesheets/invoice")
+async def invoice_approved_timesheets(
+    project_id: uuid.UUID,
+    auth: Any = Depends(_verify_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    proj = await db.get(Project, project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    q = select(Timesheet).where(
+        and_(
+            Timesheet.project_id == project_id,
+            Timesheet.status == "APPROVED",
+            Timesheet.invoiced_document_id.is_(None),
+            Timesheet.is_billable == True,
+        )
+    )
+    timesheets = (await db.execute(q)).scalars().all()
+    if not timesheets:
+        return {"success": False, "message": "No approved, unbilled timesheets found."}
+
+    now = datetime.utcnow()
+    total_amount = sum(t.billable_amount for t in timesheets)
+    doc_num = f"INV-TS-{now.strftime('%y%m')}-{secrets.randbelow(9000)+1000}"
+
+    doc = Document(
+        shop_id=proj.shop_id,
+        client_id=proj.client_id,
+        type="INVOICE",
+        doc_number=doc_num,
+        status="DRAFT",
+        currency=proj.currency,
+        sub_total=total_amount,
+        tax_amount=Decimal("0.00"),
+        grand_total=total_amount,
+        notes=f"Timesheet Billing for {proj.name}",
+        issue_date=now,
+    )
+    db.add(doc)
+    await db.flush()
+
+    for ts in timesheets:
+        di = DocumentItem(
+            document_id=doc.id,
+            description=f"[{ts.work_date}] {ts.task_description} ({ts.hours_logged} hrs @ {ts.billable_rate})",
+            quantity=ts.hours_logged,
+            unit_price=ts.billable_rate,
+            tax_type="EXEMPT",
+            tax_amount=Decimal("0.00"),
+            item_total=ts.billable_amount,
+        )
+        db.add(di)
+        ts.invoiced_document_id = doc.id
+
+    await db.commit()
+    return {"success": True, "documentId": str(doc.id), "docNumber": doc.doc_number, "billedCount": len(timesheets)}
