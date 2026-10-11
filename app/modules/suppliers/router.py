@@ -76,10 +76,10 @@ async def get_supplier_statement_endpoint(
     end_date: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    from datetime import datetime
+    from app.core.datetime_utils import to_naive_utc
     from app.modules.suppliers.service import get_supplier_statement
-    s_dt = datetime.fromisoformat(start_date) if start_date else None
-    e_dt = datetime.fromisoformat(end_date) if end_date else None
+    s_dt = to_naive_utc(start_date)
+    e_dt = to_naive_utc(end_date)
     res = await get_supplier_statement(db, shop_id=shop_id, supplier_id=supplier_id, start_date=s_dt, end_date=e_dt)
     if not res:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Supplier not found")

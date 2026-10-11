@@ -3,8 +3,8 @@ import secrets
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Any, Dict
-from pydantic import BaseModel
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from pydantic import BaseModel, field_validator
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc
 
@@ -23,6 +23,7 @@ from app.modules.auth.service import verify_and_get_session
 
 from app.core.config import get_settings
 from app.api.deps import verify_internal_api_key
+from app.core.datetime_utils import to_naive_utc
 
 settings = get_settings()
 
@@ -31,19 +32,17 @@ inventory_router = APIRouter(prefix="/inventory", tags=["Inventory Management"],
 
 
 async def _verify_auth(
+    request: Request,
     authorization: Optional[str] = Header(None),
     x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
     db: AsyncSession = Depends(get_db),
 ):
-    if x_internal_key and x_internal_key == settings.INTERNAL_API_KEY:
-        return True
-    if authorization:
-        parts = authorization.split()
-        token = parts[1] if len(parts) > 1 else parts[0]
-        user = await verify_and_get_session(db, token)
-        if user:
-            return user
-    return True
+    return await verify_internal_api_key(
+        request=request,
+        x_internal_key=x_internal_key,
+        authorization=authorization,
+        db=db,
+    )
 
 
 async def _resolve_shop_id(db: AsyncSession, shop_id: Optional[str] = None, shop_slug: Optional[str] = None) -> Optional[uuid.UUID]:
@@ -957,6 +956,10 @@ class CreateExpenseRequest(BaseModel):
     receipt_url: Optional[str] = None
     is_non_deductible: bool = False
 
+    @field_validator("expense_date")
+    def validate_expense_date(cls, v):
+        return to_naive_utc(v)
+
 
 @router.get("/expenses")
 @router.get("/operations/expenses")
@@ -997,7 +1000,7 @@ async def create_expense_endpoint(req: CreateExpenseRequest, db: AsyncSession = 
         amount=req.amount,
         category=req.category,
         currency=req.currency,
-        expense_date=req.expense_date or datetime.utcnow(),
+        expense_date=to_naive_utc(req.expense_date) or datetime.utcnow(),
         payment_channel=req.payment_channel,
         payment_reference=req.payment_reference,
         receipt_url=req.receipt_url,
@@ -1028,6 +1031,10 @@ class CreateIncomeRequest(BaseModel):
     payment_channel: Optional[str] = None
     payment_reference: Optional[str] = None
     attachment_url: Optional[str] = None
+
+    @field_validator("income_date")
+    def validate_income_date(cls, v):
+        return to_naive_utc(v)
 
 
 @router.get("/incomes")
@@ -1068,7 +1075,7 @@ async def create_income_endpoint(req: CreateIncomeRequest, db: AsyncSession = De
         amount=req.amount,
         category=req.category,
         currency=req.currency,
-        income_date=req.income_date or datetime.utcnow(),
+        income_date=to_naive_utc(req.income_date) or datetime.utcnow(),
         payment_channel=req.payment_channel,
         payment_reference=req.payment_reference,
         attachment_url=req.attachment_url,

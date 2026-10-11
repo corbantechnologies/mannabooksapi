@@ -4,12 +4,13 @@ from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status, Request, Cookie
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc, func
 
 from app.db.session import get_db
 from app.core.config import get_settings
+from app.api.deps import verify_internal_api_key
 from app.models.identity import User, Shop
 from app.models.client import Client
 from app.models.document import Document, DocumentItem
@@ -25,22 +26,19 @@ router = APIRouter(tags=["CRM, Proposals, Contracts & Projects"])
 
 
 async def _verify_auth(
+    request: Request,
     x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
     authorization: Optional[str] = Header(None),
+    access_token: Optional[str] = Cookie(None, alias="access_token"),
     db: AsyncSession = Depends(get_db),
 ):
-    if x_internal_key and x_internal_key == settings.INTERNAL_API_KEY:
-        return True
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization.split()[1]
-        user = await verify_and_get_session(db, token)
-        if user:
-            return user
-        if not settings.is_production:
-            return True
-    if not settings.is_production:
-        return True
-    raise HTTPException(status_code=401, detail="Unauthorized")
+    return await verify_internal_api_key(
+        request=request,
+        x_internal_key=x_internal_key,
+        authorization=authorization,
+        access_token=access_token,
+        db=db,
+    )
 
 
 async def _resolve_shop_id(db: AsyncSession, shop_id: Optional[str] = None, shop_slug: Optional[str] = None) -> Optional[uuid.UUID]:

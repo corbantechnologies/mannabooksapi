@@ -2,6 +2,7 @@ import uuid
 from decimal import Decimal
 from typing import Optional, List, Any, Dict
 from datetime import date, datetime
+from app.core.datetime_utils import to_naive_utc
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -299,7 +300,7 @@ async def pay_tax_instalment_endpoint(
 ):
     p_amount = req.paidAmount if req.paidAmount is not None else (req.paid_amount or Decimal("0.00"))
     p_ref = req.paymentReference or req.payment_reference or "MANUAL-TAX-PAYMENT"
-    p_at = req.paidAt or req.paid_at or datetime.utcnow()
+    p_at = to_naive_utc(req.paidAt or req.paid_at) or datetime.utcnow()
 
     inst = await pay_tax_instalment(
         db=db,

@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.api.deps import verify_internal_api_key
 from app.models.document import Document
 from app.models.expense import Expense
+from app.core.datetime_utils import to_naive_utc
 
 router = APIRouter(prefix="/b2b", tags=["B2B Network & e-Invoicing Inbox"], dependencies=[Depends(verify_internal_api_key)])
 
@@ -90,7 +91,7 @@ async def import_b2b_doc_as_expense(
         amount=doc.grand_total,
         currency=doc.currency or "KES",
         category="OTHER",
-        expense_date=doc.issue_date,
+        expense_date=to_naive_utc(doc.issue_date) or datetime.utcnow(),
         payment_channel=doc.payment_channel,
         payment_reference=doc.payment_reference or doc.doc_number,
         is_non_deductible=False,

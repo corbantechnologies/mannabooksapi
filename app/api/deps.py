@@ -101,12 +101,13 @@ async def verify_cron_or_internal_key(
 # ============================================================
 
 async def get_current_user(
+    request: Request,
     authorization: Optional[str] = Header(None, alias="Authorization"),
     access_token: Optional[str] = Cookie(None, alias="access_token"),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """
-    Extract Bearer JWT from header or standard access_token cookie, verify it, and return the User.
+    Extract Bearer JWT from header or cookies (including NextAuth session cookies), verify it, and return the User.
     Always raises 401 (never 422).
     """
     token = None
@@ -119,10 +120,25 @@ async def get_current_user(
     elif authorization:
         token = authorization.strip()
 
+    # Cookie fallback (NextAuth, session_token, session)
+    if not token and request and hasattr(request, "cookies"):
+        for c_name in [
+            "access_token",
+            "session_token",
+            "next-auth.session-token",
+            "__Secure-next-auth.session-token",
+            "session",
+            "token",
+        ]:
+            val = request.cookies.get(c_name)
+            if val:
+                token = val
+                break
+
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized - Missing or invalid Authorization header",
+            detail="Unauthorized - Missing or invalid Authorization credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -134,7 +150,7 @@ async def get_current_user(
         if user:
             return user
 
-    # 2. Try session token
+    # 2. Try session token (DB session / NextAuth session table)
     from app.modules.auth.service import verify_and_get_session
     user = await verify_and_get_session(db, token)
     if user:
@@ -145,3 +161,4 @@ async def get_current_user(
         detail="Unauthorized - Invalid or expired token",
         headers={"WWW-Authenticate": "Bearer"},
     )
+

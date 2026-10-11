@@ -17,6 +17,7 @@ from app.modules.documents.schemas import (
     DocumentPatchRequest,
 )
 from datetime import datetime, timedelta
+from app.core.datetime_utils import to_naive_utc
 
 
 def compute_item_tax_and_total(quantity: Decimal, unit_price: Decimal, tax_type: str) -> Tuple[Decimal, Decimal]:
@@ -187,8 +188,8 @@ async def create_document(db: AsyncSession, shop_id: uuid.UUID, req: DocumentCre
         sub_total=total_sub,
         tax_amount=total_tax,
         grand_total=grand_total,
-        issue_date=req.issue_date or datetime.utcnow(),
-        due_date=req.due_date,
+        issue_date=to_naive_utc(req.issue_date) or datetime.utcnow(),
+        due_date=to_naive_utc(req.due_date),
         location_id=req.location_id,
         payment_channel=req.payment_channel,
         payment_reference=req.payment_reference,
@@ -355,7 +356,9 @@ async def update_document(
     if req.currency:
         doc.currency = req.currency
     if req.due_date is not None:
-        doc.due_date = req.due_date
+        doc.due_date = to_naive_utc(req.due_date)
+    if req.issue_date is not None:
+        doc.issue_date = to_naive_utc(req.issue_date)
     if req.location_id is not None:
         doc.location_id = req.location_id
     if req.payment_channel is not None:

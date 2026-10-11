@@ -16,6 +16,7 @@ from app.modules.crons.schemas import (
     QuoteExpiryResponse,
     EtimsRetryCronResponse,
 )
+from app.core.datetime_utils import to_naive_utc
 
 
 # ================================================================
@@ -48,9 +49,10 @@ async def run_overdue_sweep(
     marked_count = 0
 
     for doc in candidates:
-        if not doc.due_date:
+        d_due = to_naive_utc(doc.due_date)
+        if not d_due:
             continue
-        days = (now - doc.due_date).days
+        days = (now - d_due).days
         if days <= 30:
             aging_buckets["1-30_days"] += 1
         elif days <= 60:
@@ -148,7 +150,7 @@ async def run_process_recurring(
 
             # 4. Advance next_recurring_date on parent
             interval = (parent.recurring_interval or "MONTHLY").upper()
-            curr_target = parent.next_recurring_date or now
+            curr_target = to_naive_utc(parent.next_recurring_date) or now
             if interval == "WEEKLY":
                 next_date = curr_target + timedelta(days=7)
             elif interval == "MONTHLY":
@@ -160,7 +162,7 @@ async def run_process_recurring(
             else:
                 next_date = curr_target + timedelta(days=30)
 
-            parent.next_recurring_date = next_date
+            parent.next_recurring_date = to_naive_utc(next_date)
 
             processed_items.append(
                 RecurringScheduleProcessedItem(

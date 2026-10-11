@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional, Literal
-from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional, Literal, Any
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 class RecordPaymentRequest(BaseModel):
@@ -12,6 +12,12 @@ class RecordPaymentRequest(BaseModel):
     payment_reference: Optional[str] = None
     payment_date: Optional[datetime] = None
     notes: Optional[str] = None
+
+    @field_validator("payment_date", mode="before")
+    @classmethod
+    def normalize_payment_date(cls, v: Any) -> Any:
+        from app.core.datetime_utils import to_naive_utc
+        return to_naive_utc(v)
 
 
 class MpesaC2BCallbackRequest(BaseModel):

@@ -1,6 +1,7 @@
 import uuid
 import secrets
 from datetime import datetime, date
+from app.core.datetime_utils import to_naive_utc
 from decimal import Decimal
 from typing import Optional, List, Dict
 from pydantic import BaseModel, EmailStr
@@ -790,7 +791,7 @@ async def disburse_claim(
     if c.status != "APPROVED":
         return {"success": False, "error": "Only approved claims can be disbursed."}
 
-    p_date = datetime.fromisoformat(req.payment_date) if req.payment_date else datetime.utcnow()
+    p_date = to_naive_utc(req.payment_date) or datetime.utcnow()
 
     # Create official Expense
     exp = Expense(

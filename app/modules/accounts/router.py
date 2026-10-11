@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from app.core.datetime_utils import to_naive_utc
 from decimal import Decimal
 from typing import List, Optional
 from pydantic import BaseModel
@@ -590,7 +591,7 @@ async def create_compound_journal_entry_endpoint(
     if not lines:
         raise HTTPException(status_code=400, detail="Journal entry lines required")
 
-    entry_date = datetime.fromisoformat(req["entry_date"]) if req.get("entry_date") else datetime.utcnow()
+    entry_date = to_naive_utc(req.get("entry_date")) or datetime.utcnow()
     desc_text = (req.get("description") or "Compound Journal Entry").strip()
     ref_num = req.get("reference_number")
     cc_id = uuid.UUID(req["cost_center_id"]) if req.get("cost_center_id") else None
@@ -668,7 +669,7 @@ async def create_opening_balances_endpoint(
     from app.models.journal import JournalEntry
     from app.models.account import ChartOfAccount
 
-    as_of = datetime.fromisoformat(req["as_of_date"]) if req.get("as_of_date") else datetime.utcnow()
+    as_of = to_naive_utc(req.get("as_of_date")) or datetime.utcnow()
     lines = req.get("lines") or []
 
     eq_q = select(ChartOfAccount).where(

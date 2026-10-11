@@ -12,6 +12,7 @@ from app.modules.payments.schemas import (
     PaymentReceiptSummary,
 )
 from datetime import datetime
+from app.core.datetime_utils import to_naive_utc
 
 
 async def record_payment(
@@ -41,7 +42,7 @@ async def record_payment(
         document_id=doc.id,
         shop_id=shop_id,
         amount=req.amount,
-        payment_date=req.payment_date or datetime.utcnow(),
+        payment_date=to_naive_utc(req.payment_date) or datetime.utcnow(),
         payment_channel=req.payment_channel,
         payment_reference=req.payment_reference.strip() if req.payment_reference else None,
         notes=req.notes,

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Any
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
@@ -78,6 +78,12 @@ class DocumentCreateRequest(BaseModel):
             "APPROVED": "ISSUED",
         }
         return mapping.get(val, val)
+
+    @field_validator("issue_date", "due_date", mode="before")
+    @classmethod
+    def normalize_dates(cls, v: Any) -> Any:
+        from app.core.datetime_utils import to_naive_utc
+        return to_naive_utc(v)
 
 
 class CreditNoteItemInput(BaseModel):

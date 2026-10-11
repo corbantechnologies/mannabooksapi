@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc
 from sqlalchemy.orm import selectinload
@@ -16,6 +16,7 @@ from app.models.document import Document, DocumentItem
 from app.models.supplier import Supplier
 from app.models.account import ChartOfAccount
 from app.models.identity import Shop
+from app.core.datetime_utils import to_naive_utc
 
 router = APIRouter(prefix="/bills", tags=["Vendor Bills & 3-Way Matching"], dependencies=[Depends(verify_internal_api_key)])
 
@@ -47,6 +48,16 @@ class CreateBillRequest(BaseModel):
     attachment_size: Optional[int] = None
     items: List[BillItemInput]
 
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs):
+        super().__pydantic_init_subclass__(**kwargs)
+
+    def get_bill_date(self) -> Optional[datetime]:
+        return to_naive_utc(self.bill_date)
+
+    def get_due_date(self) -> Optional[datetime]:
+        return to_naive_utc(self.due_date)
+
 
 class PayBillRequest(BaseModel):
     payment_amount: Decimal
@@ -54,6 +65,10 @@ class PayBillRequest(BaseModel):
     payment_reference: str
     payment_date: Optional[datetime] = None
     notes: Optional[str] = None
+
+    @field_validator("payment_date")
+    def validate_payment_date(cls, v):
+        return to_naive_utc(v)
 
 
 def format_bill_dict(b: VendorBill) -> Dict[str, Any]:
@@ -291,8 +306,8 @@ async def create_bill(
         supplier_id=req.supplier_id,
         bill_number=bill_num,
         reference=req.reference,
-        bill_date=req.bill_date or datetime.utcnow(),
-        due_date=req.due_date,
+        bill_date=req.get_bill_date() or datetime.utcnow(),
+        due_date=req.get_due_date(),
         sub_total=sub_total,
         tax_amount=tax_total,
         wht_rate=wht_rate,
@@ -335,7 +350,7 @@ async def pay_bill(
     bill.amount_paid = new_paid
     bill.payment_channel = req.payment_channel
     bill.payment_reference = req.payment_reference
-    bill.paid_at = req.payment_date or datetime.utcnow()
+    bill.paid_at = to_naive_utc(req.payment_date) or datetime.utcnow()
 
     if new_paid >= bill.net_payable:
         bill.status = "PAID"
