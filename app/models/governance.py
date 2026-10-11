@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import String, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import String, Boolean, DateTime, ForeignKey, Text, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
@@ -13,7 +13,18 @@ class AuditLog(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    action: Mapped[str] = mapped_column(String(50), nullable=False)
+    action: Mapped[str] = mapped_column(
+        "action",
+        SQLEnum(
+            'CREATE', 'UPDATE', 'DELETE', 'STATUS_CHANGE', 'ROLE_CHANGE',
+            'PAYMENT_RECORDED', 'PAYMENT_DELETED', 'PERIOD_CLOSED',
+            'PERIOD_REOPENED', 'FISCAL_YEAR_CLOSED', 'FISCAL_YEAR_REOPENED',
+            'MEMBER_ADDED', 'MEMBER_REMOVED', 'CANCELLATION',
+            name="audit_action",
+            create_type=False,
+        ),
+        nullable=False,
+    )
     table_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     record_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     record_label: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

@@ -991,11 +991,11 @@ async def list_payment_methods(
             {
                 "id": str(m.id),
                 "shopId": str(m.shop_id),
-                "type": m.type,
+                "type": "BANK",
                 "name": m.name,
                 "details": m.details,
                 "isDefault": bool(m.is_default),
-                "instructions": m.instructions,
+                "instructions": m.details,
                 "createdAt": m.created_at.isoformat() if m.created_at else None,
             }
             for m in methods
@@ -1020,13 +1020,12 @@ async def create_payment_method(
     if req.is_default:
         await db.execute(update(PaymentMethod).where(PaymentMethod.shop_id == parsed_id).values(is_default=False))
 
+    details_val = req.details if req.details else (req.instructions or "")
     new_pm = PaymentMethod(
         shop_id=parsed_id,
-        type=req.type,
         name=req.name,
-        details=req.details,
+        details=details_val,
         is_default=req.is_default,
-        instructions=req.instructions,
     )
     db.add(new_pm)
     await db.commit()
@@ -1064,12 +1063,10 @@ async def update_payment_method_endpoint(
 
     if req.name is not None:
         pm.name = req.name
-    if req.type is not None:
-        pm.type = req.type
     if req.details is not None:
         pm.details = req.details
-    if req.instructions is not None:
-        pm.instructions = req.instructions
+    elif req.instructions is not None:
+        pm.details = req.instructions
 
     await db.commit()
     return {"success": True}
@@ -1278,9 +1275,9 @@ async def list_shop_terms(
                 "content": t.content,
                 "displayOrder": t.display_order,
                 "isDefaultInvoice": bool(t.is_default_invoice),
-                "isDefaultQuote": bool(t.is_default_quote),
-                "isDefaultReceipt": bool(t.is_default_receipt),
-                "isDefaultDelivery": bool(t.is_default_delivery),
+                "isDefaultQuote": bool(t.is_default_invoice),
+                "isDefaultReceipt": bool(t.is_default_invoice),
+                "isDefaultDelivery": bool(t.is_default_invoice),
                 "isDefaultCatalog": bool(t.is_default_catalog),
                 "createdAt": t.created_at.isoformat() if t.created_at else None,
             }
@@ -1308,9 +1305,6 @@ async def create_shop_term(
         content=req.content.strip(),
         display_order=req.display_order,
         is_default_invoice=req.is_default_invoice,
-        is_default_quote=req.is_default_quote,
-        is_default_receipt=req.is_default_receipt,
-        is_default_delivery=req.is_default_delivery,
         is_default_catalog=req.is_default_catalog,
     )
     db.add(term)
@@ -1348,12 +1342,6 @@ async def update_shop_term(
         term.display_order = req.display_order
     if req.is_default_invoice is not None:
         term.is_default_invoice = req.is_default_invoice
-    if req.is_default_quote is not None:
-        term.is_default_quote = req.is_default_quote
-    if req.is_default_receipt is not None:
-        term.is_default_receipt = req.is_default_receipt
-    if req.is_default_delivery is not None:
-        term.is_default_delivery = req.is_default_delivery
     if req.is_default_catalog is not None:
         term.is_default_catalog = req.is_default_catalog
 
@@ -1397,11 +1385,11 @@ async def seed_default_terms(
         parsed_id = shop_id
 
     default_terms = [
-        {"title": "Payment Terms", "content": "Payment is strictly due within 14 days of invoice date unless otherwise specified in written contractual agreement.", "display_order": 1, "is_default_invoice": True, "is_default_quote": True},
-        {"title": "Quotation Validity", "content": "This quotation remains valid for 30 calendar days from the date of issuance, subject to stock availability.", "display_order": 2, "is_default_invoice": False, "is_default_quote": True},
-        {"title": "Ownership of Goods", "content": "All delivered items remain the legal property of the company until paid for in full.", "display_order": 3, "is_default_invoice": True, "is_default_quote": True},
-        {"title": "Delivery & Logistics", "content": "Standard delivery lead times within Nairobi are 24-48 business hours upon order confirmation and settlement.", "display_order": 4, "is_default_delivery": True, "is_default_catalog": True},
-        {"title": "Returns & Discrepancies", "content": "Goods once sold in good order cannot be returned without formal management authorization within 7 days.", "display_order": 5, "is_default_invoice": True, "is_default_receipt": True},
+        {"title": "Payment Terms", "content": "Payment is strictly due within 14 days of invoice date unless otherwise specified in written contractual agreement.", "display_order": 1, "is_default_invoice": True},
+        {"title": "Quotation Validity", "content": "This quotation remains valid for 30 calendar days from the date of issuance, subject to stock availability.", "display_order": 2, "is_default_invoice": False},
+        {"title": "Ownership of Goods", "content": "All delivered items remain the legal property of the company until paid for in full.", "display_order": 3, "is_default_invoice": True},
+        {"title": "Delivery & Logistics", "content": "Standard delivery lead times within Nairobi are 24-48 business hours upon order confirmation and settlement.", "display_order": 4, "is_default_catalog": True},
+        {"title": "Returns & Discrepancies", "content": "Goods once sold in good order cannot be returned without formal management authorization within 7 days.", "display_order": 5, "is_default_invoice": True},
     ]
 
     for item in default_terms:
@@ -1411,9 +1399,6 @@ async def seed_default_terms(
             content=item["content"],
             display_order=item["display_order"],
             is_default_invoice=item.get("is_default_invoice", False),
-            is_default_quote=item.get("is_default_quote", False),
-            is_default_receipt=item.get("is_default_receipt", False),
-            is_default_delivery=item.get("is_default_delivery", False),
             is_default_catalog=item.get("is_default_catalog", False),
         )
         db.add(t)

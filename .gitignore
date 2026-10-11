@@ -30,3 +30,6 @@ venv/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+
+/samples
+samples/

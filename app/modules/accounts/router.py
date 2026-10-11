@@ -58,6 +58,105 @@ async def list_fiscal_years_endpoint(
     }
 
 
+class DeclareFiscalYearRequest(BaseModel):
+    shop_id: uuid.UUID
+    label: str
+    startDate: Optional[str] = None
+    start_date: Optional[str] = None
+    endDate: Optional[str] = None
+    end_date: Optional[str] = None
+
+
+class CloseFiscalYearRequest(BaseModel):
+    shop_id: uuid.UUID
+
+
+@router.post("/fiscal-years", status_code=status.HTTP_201_CREATED)
+async def declare_fiscal_year_endpoint(
+    req: DeclareFiscalYearRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    from datetime import date
+    from app.models.account import FiscalYear
+
+    s_str = req.startDate or req.start_date
+    e_str = req.endDate or req.end_date
+    if not s_str or not e_str:
+        raise HTTPException(status_code=400, detail="Start date and end date are required")
+
+    try:
+        s_date = date.fromisoformat(s_str[:10])
+        e_date = date.fromisoformat(e_str[:10])
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD")
+
+    fy = FiscalYear(
+        shop_id=req.shop_id,
+        label=req.label.strip(),
+        start_date=s_date,
+        end_date=e_date,
+        is_closed=False,
+        is_current=False,
+    )
+    db.add(fy)
+    await db.commit()
+    await db.refresh(fy)
+
+    return {
+        "success": True,
+        "fiscalYear": {
+            "id": str(fy.id),
+            "label": fy.label,
+            "startDate": str(fy.start_date),
+            "endDate": str(fy.end_date),
+            "isClosed": fy.is_closed,
+            "isCurrent": fy.is_current,
+        },
+    }
+
+
+@router.post("/fiscal-years/{fy_id}/close")
+async def close_fiscal_year_endpoint(
+    fy_id: uuid.UUID,
+    req: CloseFiscalYearRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.account import FiscalYear
+
+    fy = await db.get(FiscalYear, fy_id)
+    if not fy or fy.shop_id != req.shop_id:
+        raise HTTPException(status_code=404, detail="Fiscal year not found")
+
+    fy.is_closed = True
+    fy.is_current = False
+    await db.commit()
+    await db.refresh(fy)
+
+    return {"success": True, "message": f"Fiscal Year '{fy.label}' closed successfully."}
+
+
+@router.delete("/fiscal-years/{fy_id}")
+async def delete_fiscal_year_endpoint(
+    fy_id: uuid.UUID,
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.account import FiscalYear
+
+    fy = await db.get(FiscalYear, fy_id)
+    if not fy or fy.shop_id != shop_id:
+        raise HTTPException(status_code=404, detail="Fiscal year not found")
+
+    if fy.is_closed:
+        raise HTTPException(status_code=400, detail="Closed fiscal years cannot be deleted")
+
+    await db.delete(fy)
+    await db.commit()
+
+    return {"success": True, "message": "Fiscal year deleted successfully."}
+
+
+
 class CreateJournalEntryRequest(BaseModel):
     entry_date: Optional[datetime] = None
     description: str

@@ -22,6 +22,7 @@ from app.modules.admin.router import router as admin_router
 from app.modules.bills.router import router as bills_router
 from app.modules.group_consolidation.router import router as group_consolidation_router
 from app.modules.billing.router import router as billing_router
+from app.modules.finance.router import router as finance_router
 
 settings = get_settings()
 
@@ -107,6 +108,7 @@ app.include_router(admin_router, prefix="/v1")
 app.include_router(bills_router, prefix="/v1")
 app.include_router(group_consolidation_router, prefix="/v1")
 app.include_router(billing_router, prefix="/v1")
+app.include_router(finance_router, prefix="/v1")
 
 
 @app.get("/")

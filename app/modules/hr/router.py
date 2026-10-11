@@ -740,7 +740,7 @@ async def get_ess_profile(
             "id": str(emp.id),
             "fullName": emp.full_name,
             "email": emp.email,
-            "phone": emp.phone,
+            "phone": emp.mpesa_phone,
             "designation": emp.designation,
             "department": emp.department,
             "employmentType": emp.employment_type,

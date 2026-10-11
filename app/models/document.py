@@ -68,7 +68,19 @@ class Document(Base):
     # Email Delivery Tracking
     resend_email_id: Mapped[Optional[str]] = mapped_column("resend_email_id", String(100), nullable=True)
     email_delivery_status: Mapped[str] = mapped_column("email_delivery_status", String(50), default="NOT_SENT", nullable=False)
+    last_email_sent_at: Mapped[Optional[datetime]] = mapped_column("last_email_sent_at", DateTime, nullable=True)
     last_email_opened_at: Mapped[Optional[datetime]] = mapped_column("last_email_opened_at", DateTime, nullable=True)
+    last_reminder_sent_at: Mapped[Optional[datetime]] = mapped_column("last_reminder_sent_at", DateTime, nullable=True)
+    is_read_by_recipient: Mapped[bool] = mapped_column("is_read_by_recipient", Boolean, default=False, nullable=False)
+
+    # Client Portal Interaction
+    client_portal_response: Mapped[Optional[str]] = mapped_column("client_portal_response", String(50), nullable=True)
+    client_amendment_notes: Mapped[Optional[str]] = mapped_column("client_amendment_notes", Text, nullable=True)
+
+    # Loyalty Tracking
+    loyalty_points_earned: Mapped[Optional[int]] = mapped_column("loyalty_points_earned", Integer, default=0, nullable=True)
+    loyalty_points_redeemed: Mapped[Optional[int]] = mapped_column("loyalty_points_redeemed", Integer, default=0, nullable=True)
+    loyalty_discount_amount: Mapped[Optional[Decimal]] = mapped_column("loyalty_discount_amount", Numeric(12, 2), default=Decimal("0.00"), nullable=True)
 
     # Multi-currency and Financial Metrics
     currency: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)

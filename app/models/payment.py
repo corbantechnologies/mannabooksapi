@@ -37,9 +37,7 @@ class PaymentMethod(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     shop_id: Mapped[uuid.UUID] = mapped_column("shop_id", UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
-    type: Mapped[str] = mapped_column(String(50), nullable=False)  # MPESA_TILL, MPESA_PAYBILL, BANK, CASH, OTHER
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     details: Mapped[str] = mapped_column(Text, nullable=False)
     is_default: Mapped[bool] = mapped_column("is_default", Boolean, default=False, nullable=False)
-    instructions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)

@@ -39,3 +39,21 @@ class FiscalYear(Base):
     is_closed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_current: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+period_status_enum = SQLEnum('OPEN', 'CLOSED', name="period_status", create_type=False)
+
+
+class AccountingPeriod(Base):
+    __tablename__ = "accounting_periods"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
+    fiscal_year_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("fiscal_years.id", ondelete="SET NULL"), nullable=True, index=True)
+    period_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(period_status_enum, default="OPEN", nullable=False)
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    closed_by_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

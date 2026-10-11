@@ -30,9 +30,13 @@ router = APIRouter(tags=["Operations, Manufacturing, Budgets & Loyalty"])
 class CreateBudgetRequest(BaseModel):
     shop_id: str
     account_id: str
+    month: Optional[int] = None
+    year: Optional[int] = None
+    monthly_limit: Optional[Decimal] = None
+    # Backward compatibility
     fiscal_year_id: Optional[str] = None
     period: str = "ANNUAL"
-    budget_amount: Decimal
+    budget_amount: Optional[Decimal] = None
     notes: Optional[str] = None
 
 
@@ -40,6 +44,7 @@ class CreateCostCenterRequest(BaseModel):
     shop_id: str
     code: str
     name: str
+    department: Optional[str] = None
     description: Optional[str] = None
     manager_id: Optional[str] = None
     budget_amount: Decimal = Decimal("0.00")
@@ -119,14 +124,17 @@ async def create_budget(
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+    now = datetime.utcnow()
+    m_val = req.month if req.month is not None else now.month
+    y_val = req.year if req.year is not None else now.year
+    limit_val = req.monthly_limit if req.monthly_limit is not None else (req.budget_amount or Decimal("0.00"))
+
     budget = Budget(
         shop_id=uuid.UUID(req.shop_id),
         account_id=uuid.UUID(req.account_id),
-        fiscal_year_id=uuid.UUID(req.fiscal_year_id) if req.fiscal_year_id else None,
-        period=req.period,
-        budget_amount=req.budget_amount,
-        actual_amount=Decimal("0.00"),
-        notes=req.notes.strip() if req.notes else None,
+        month=m_val,
+        year=y_val,
+        monthly_limit=limit_val,
     )
     db.add(budget)
     await db.commit()
@@ -165,13 +173,12 @@ async def create_cost_center(
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+    dept = req.department or req.description
     cc = CostCenter(
         shop_id=uuid.UUID(req.shop_id),
         code=req.code.strip().upper(),
         name=req.name.strip(),
-        description=req.description.strip() if req.description else None,
-        manager_id=uuid.UUID(req.manager_id) if req.manager_id else None,
-        budget_amount=req.budget_amount,
+        department=dept.strip() if dept else None,
         is_active=True,
     )
     db.add(cc)
@@ -325,21 +332,23 @@ async def update_loyalty_program(
     if not prog:
         prog = LoyaltyProgram(
             shop_id=uuid.UUID(req.shop_id),
-            name=req.name,
-            points_per_kes=req.points_per_kes,
-            kes_per_point=req.kes_per_point,
+            program_name=req.name,
+            earn_rate_kes=req.points_per_kes,
+            point_value_kes=req.kes_per_point,
             min_redeem_points=req.min_redeem_points,
             points_expiry_days=req.points_expiry_days,
-            is_active=req.is_active,
+            is_enabled=req.is_active,
+            engine_mode="POINTS_ONLY" if req.is_active else "OFF",
         )
         db.add(prog)
     else:
-        prog.name = req.name
-        prog.points_per_kes = req.points_per_kes
-        prog.kes_per_point = req.kes_per_point
+        prog.program_name = req.name
+        prog.earn_rate_kes = req.points_per_kes
+        prog.point_value_kes = req.kes_per_point
         prog.min_redeem_points = req.min_redeem_points
         prog.points_expiry_days = req.points_expiry_days
-        prog.is_active = req.is_active
+        prog.is_enabled = req.is_active
+        prog.engine_mode = "POINTS_ONLY" if req.is_active else "OFF"
 
     await db.commit()
     return {"success": True, "program": prog}
@@ -359,9 +368,10 @@ async def create_loyalty_tier(req: CreateTierRequest, db: AsyncSession = Depends
     tier = MembershipTier(
         shop_id=uuid.UUID(req.shop_id),
         name=req.name,
-        min_points=req.min_points,
-        discount_percentage=req.discount_percentage,
-        perks_description=req.perks_description,
+        min_spend_kes=Decimal(req.min_points),
+        discount_percent=req.discount_percentage,
+        points_multiplier=Decimal("1.00"),
+        badge_color="#000000",
         display_order=req.display_order,
     )
     db.add(tier)
@@ -417,8 +427,7 @@ async def adjust_loyalty_points(
             shop_id=uuid.UUID(req.shop_id),
             client_id=uuid.UUID(req.client_id),
             current_points=0,
-            lifetime_points_earned=0,
-            lifetime_points_redeemed=0,
+            lifetime_points=0,
         )
         db.add(acc)
         await db.flush()
@@ -429,18 +438,18 @@ async def adjust_loyalty_points(
 
     acc.current_points = new_balance
     if req.points > 0:
-        acc.lifetime_points_earned += req.points
-    else:
-        acc.lifetime_points_redeemed += abs(req.points)
+        acc.lifetime_points += req.points
 
+    m_type = req.movement_type.upper() if req.movement_type else "MANUAL_ADJUST"
     ledger_entry = LoyaltyLedger(
         shop_id=uuid.UUID(req.shop_id),
         account_id=acc.id,
         source_document_id=uuid.UUID(req.source_document_id) if req.source_document_id else None,
-        movement_type=req.movement_type,
-        points=req.points,
-        running_balance=new_balance,
-        reason=req.reason,
+        movement_type=m_type,
+        points_delta=req.points,
+        running_points_balance=new_balance,
+        notes=req.reason,
+        created_by_id=user.id,
     )
     db.add(ledger_entry)
     await db.commit()
@@ -531,8 +540,7 @@ async def find_or_create_loyalty_account_by_phone_endpoint(
             client_id=client.id,
             member_number=f"MEM-{secrets.token_hex(3).upper()}",
             current_points=0,
-            lifetime_points_earned=0,
-            lifetime_points_redeemed=0,
+            lifetime_points=0,
             wallet_balance_kes=Decimal("0.00"),
         )
         db.add(acc)

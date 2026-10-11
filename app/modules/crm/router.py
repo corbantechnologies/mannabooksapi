@@ -235,8 +235,6 @@ async def create_proposal(
         title=req.title.strip(),
         currency=req.currency.upper(),
         subtotal=subtotal,
-        tax_total=tax_total,
-        grand_total=grand_total,
         status="DRAFT",
         valid_until=v_until,
         notes=req.notes.strip() if req.notes else None,
@@ -245,17 +243,14 @@ async def create_proposal(
     db.add(prop)
     await db.flush()
 
-    for it in req.items:
+    for idx, it in enumerate(req.items, start=1):
         p_item = ProposalItem(
             proposal_id=prop.id,
-            product_id=uuid.UUID(it.product_id) if it.product_id else None,
             description=it.description,
             quantity=it.quantity,
             unit_price=it.unit_price,
-            discount_amount=it.discount_amount,
-            tax_type=it.tax_type,
-            tax_amount=it.tax_amount,
-            item_total=it.item_total or ((it.quantity * it.unit_price) - it.discount_amount + it.tax_amount),
+            item_total=it.item_total or (it.quantity * it.unit_price),
+            display_order=idx,
         )
         db.add(p_item)
 
