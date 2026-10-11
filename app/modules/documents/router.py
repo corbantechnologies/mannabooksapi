@@ -1,6 +1,9 @@
 import uuid
+import secrets
 from typing import List, Optional, Any, Dict
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select, and_, or_, desc, func
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.api.deps import verify_internal_api_key
@@ -214,9 +217,6 @@ async def get_public_document_endpoint(
     token: str,
     db: AsyncSession = Depends(get_db),
 ):
-    import uuid
-    from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
     from app.models.document import Document, DocumentToken
     from app.models.identity import Shop
     from app.models.payment import PaymentMethod
