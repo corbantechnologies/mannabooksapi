@@ -670,21 +670,10 @@ async def update_workspace_settings_endpoint(
 @router.get("/{shop_id}/members")
 async def get_workspace_members_endpoint(
     shop_id: str,
-    authorization: Optional[str] = Header(None, description="Bearer <session_token>"),
-    x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
+    _auth: bool = Depends(verify_internal_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     """List members and pending invitations for a workspace."""
-    is_internal = x_internal_key and x_internal_key == settings.INTERNAL_API_KEY
-    if not is_internal and not settings.is_development:
-        if not authorization:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header or internal key required")
-        parts = authorization.split()
-        if len(parts) != 2 or parts[0].lower() != "bearer":
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
-        user = await verify_and_get_session(db, parts[1])
-        if not user:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
 
     try:
         s_uuid = uuid.UUID(str(shop_id))
@@ -762,21 +751,10 @@ async def get_workspace_members_endpoint(
 @router.get("/{shop_id}/invitations")
 async def get_workspace_invitations_endpoint(
     shop_id: str,
-    authorization: Optional[str] = Header(None, description="Bearer <session_token>"),
-    x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
+    _auth: bool = Depends(verify_internal_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     """List pending invitations for a workspace."""
-    is_internal = x_internal_key and x_internal_key == settings.INTERNAL_API_KEY
-    if not is_internal and not settings.is_development:
-        if not authorization:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header or internal key required")
-        parts = authorization.split()
-        if len(parts) != 2 or parts[0].lower() != "bearer":
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
-        user = await verify_and_get_session(db, parts[1])
-        if not user:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
 
     try:
         s_uuid = uuid.UUID(str(shop_id))
@@ -985,21 +963,10 @@ async def list_payment_methods(
     q = select(PaymentMethod).where(PaymentMethod.shop_id == parsed_id).order_by(desc(PaymentMethod.is_default), asc(PaymentMethod.created_at))
     res = await db.execute(q)
     methods = res.scalars().all()
+    from app.models.payment import serialize_payment_method
     return {
         "success": True,
-        "paymentMethods": [
-            {
-                "id": str(m.id),
-                "shopId": str(m.shop_id),
-                "type": "BANK",
-                "name": m.name,
-                "details": m.details,
-                "isDefault": bool(m.is_default),
-                "instructions": m.details,
-                "createdAt": m.created_at.isoformat() if m.created_at else None,
-            }
-            for m in methods
-        ]
+        "paymentMethods": [serialize_payment_method(m) for m in methods]
     }
 
 

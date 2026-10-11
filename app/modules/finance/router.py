@@ -5,7 +5,7 @@ from datetime import date, datetime
 from app.core.datetime_utils import to_naive_utc
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, and_, or_, desc, asc, func
 
 from app.db.session import get_db
 from app.api.deps import verify_internal_api_key
@@ -372,10 +372,11 @@ async def get_bank_reconciliation(
                 "isReconciled": False,
             })
 
-    q_pm = select(PaymentMethod).where(PaymentMethod.shop_id == shop_id)
+    from app.models.payment import serialize_payment_method
+    q_pm = select(PaymentMethod).where(PaymentMethod.shop_id == shop_id).order_by(desc(PaymentMethod.is_default), asc(PaymentMethod.created_at))
     res_pm = await db.execute(q_pm)
     methods = [
-        {"id": str(m.id), "name": m.name, "details": m.details or ""}
+        serialize_payment_method(m)
         for m in res_pm.scalars().all()
     ]
 

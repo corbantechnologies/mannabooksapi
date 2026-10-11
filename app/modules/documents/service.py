@@ -3,7 +3,7 @@ import secrets
 from decimal import Decimal
 from typing import List, Optional, Tuple, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, and_, or_, desc, func
+from sqlalchemy import select, update, and_, or_, desc, asc, func
 from sqlalchemy.orm import selectinload
 from app.models.document import Document, DocumentItem, DocumentToken, DocumentNote
 from app.models.payment import DocumentPayment
@@ -554,6 +554,16 @@ async def get_document_full_detail(
     )
     payments_res = (await db.execute(q_payments)).scalars().all()
 
+    # Payment Methods for invoice remittance instructions
+    from app.models.payment import PaymentMethod, serialize_payment_method
+    q_pms = (
+        select(PaymentMethod)
+        .where(PaymentMethod.shop_id == shop_id)
+        .order_by(desc(PaymentMethod.is_default), asc(PaymentMethod.created_at))
+    )
+    pms_res = (await db.execute(q_pms)).scalars().all()
+    serialized_pms = [serialize_payment_method(pm) for pm in pms_res]
+
     # Notes
     q_notes = (
         select(DocumentNote)
@@ -703,6 +713,7 @@ async def get_document_full_detail(
         ],
         "parentDocument": parent_doc,
         "childDocuments": child_docs,
+        "paymentMethods": serialized_pms,
     }
 
 

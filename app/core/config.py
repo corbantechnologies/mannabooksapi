@@ -59,6 +59,14 @@ class Settings(BaseSettings):
         return creds
 
     @property
+    def is_development(self) -> bool:
+        return self.ENVIRONMENT == "development"
+
+    @property
+    def is_staging(self) -> bool:
+        return self.ENVIRONMENT == "staging"
+
+    @property
     def is_production(self) -> bool:
         return self.ENVIRONMENT == "production"
 

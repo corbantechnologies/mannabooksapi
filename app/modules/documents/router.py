@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.api.deps import verify_internal_api_key
+from app.models.payment import PaymentMethod, serialize_payment_method
 from app.modules.documents.schemas import (
     DocumentCreateRequest,
     CreditNoteCreateRequest,
@@ -219,7 +220,6 @@ async def get_public_document_endpoint(
 ):
     from app.models.document import Document, DocumentToken
     from app.models.identity import Shop
-    from app.models.payment import PaymentMethod
 
     target_doc_id = None
 
@@ -303,7 +303,7 @@ async def get_public_document_endpoint(
     portal_response = doc.client_portal_response or ("ACCEPTED" if doc.status == "CONFIRMED" else None)
     is_decided = portal_response in ("ACCEPTED", "DECLINED") or doc.status in ("CONFIRMED", "CANCELLED")
 
-    return {
+    ret = {
         "success": True,
         "document": {
             "id": str(doc.id),
@@ -360,17 +360,12 @@ async def get_public_document_endpoint(
             "taxPin": getattr(shop, "tax_pin", None) if shop else None,
             "primaryColor": getattr(shop, "primary_color", "#064e3b") if shop else "#064e3b",
         },
-        "paymentMethods": [
-            {
-                "id": str(pm.id),
-                "type": getattr(pm, "type", "MPESA"),
-                "name": getattr(pm, "name", "M-Pesa"),
-                "accountNumber": getattr(pm, "account_number", None),
-                "paybillNumber": getattr(pm, "paybill_number", None),
-            }
-            for pm in pms
-        ]
+        "paymentMethods": [serialize_payment_method(pm) for pm in pms],
     }
+    ret["document"]["paymentMethods"] = ret["paymentMethods"]
+    if "shop" in ret and ret["shop"]:
+        ret["shop"]["paymentMethods"] = ret["paymentMethods"]
+    return ret
 
 
 @router.post("/{document_id}/recurring-cycle")
