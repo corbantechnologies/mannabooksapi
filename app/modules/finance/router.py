@@ -5,7 +5,7 @@ from datetime import date, datetime
 from app.core.datetime_utils import to_naive_utc
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, desc, asc, func
+from sqlalchemy import and_, asc, desc, func, or_, select
 
 from app.db.session import get_db
 from app.api.deps import verify_internal_api_key
@@ -354,13 +354,26 @@ async def get_bank_reconciliation(
         res_je = await db.execute(q_je)
         entries = res_je.scalars().all()
 
+        # Book balance comes from ALL cash entries; only the latest 100 are listed for matching.
+        debit_total = (
+            await db.execute(
+                select(func.coalesce(func.sum(JournalEntry.amount), 0)).where(
+                    JournalEntry.shop_id == shop_id, JournalEntry.debit_account_id == cash_acc.id
+                )
+            )
+        ).scalar() or Decimal("0")
+        credit_total = (
+            await db.execute(
+                select(func.coalesce(func.sum(JournalEntry.amount), 0)).where(
+                    JournalEntry.shop_id == shop_id, JournalEntry.credit_account_id == cash_acc.id
+                )
+            )
+        ).scalar() or Decimal("0")
+        book_balance = Decimal(debit_total) - Decimal(credit_total)
+
         for je in entries:
             is_debit = (je.debit_account_id == cash_acc.id)
             amt = je.amount
-            if is_debit:
-                book_balance += amt
-            else:
-                book_balance -= amt
 
             gl_entries.append({
                 "id": str(je.id),

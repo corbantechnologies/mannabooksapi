@@ -86,6 +86,20 @@ def normalize_doc_status(status: Optional[str]) -> str:
     return DOC_STATUS_MAPPING.get(s, s)
 
 
+async def _sync_gl(db: AsyncSession, shop_id: uuid.UUID, doc: Document) -> None:
+    """Keep the ledger in step with this document. Closed periods block the change (409)."""
+    from app.modules.accounts.posting import PeriodLockedError, sync_document_gl
+
+    try:
+        async with db.begin_nested():
+            await sync_document_gl(db, shop_id, doc)
+    except PeriodLockedError:
+        raise
+    except Exception:
+        # Never lose the business change because of a posting bug; the integrity check will flag it.
+        logger.exception("GL sync failed for document %s", doc.id)
+
+
 async def generate_doc_number(db: AsyncSession, shop_id: uuid.UUID, doc_type: str) -> str:
     """
     Generates professional randomized document numbers in the format:
@@ -230,11 +244,7 @@ async def create_document(db: AsyncSession, shop_id: uuid.UUID, req: DocumentCre
     db.add(tok)
 
     # Automatically post double-entry GL journal entry if GL is active
-    try:
-        from app.modules.accounts.gl_service import post_document_to_gl
-        await post_document_to_gl(db, shop_id, doc)
-    except Exception as gl_err:
-        logger.warning("GL Auto-Post Info: %s", gl_err)
+    await _sync_gl(db, shop_id, doc)
 
     await db.commit()
     return await get_document_by_id(db, shop_id, doc.id)
@@ -355,11 +365,7 @@ async def issue_credit_note(
     db.add(credit_doc)
     await db.flush()
 
-    try:
-        from app.modules.accounts.gl_service import post_document_to_gl
-        await post_document_to_gl(db, shop_id, credit_doc)
-    except Exception as gl_err:
-        logger.warning("GL Credit Note Post Info: %s", gl_err)
+    await _sync_gl(db, shop_id, credit_doc)
 
     await db.commit()
     return await get_document_by_id(db, shop_id, credit_doc.id)
@@ -374,11 +380,7 @@ async def update_document_status(
     doc.status = normalize_doc_status(new_status)
     await db.flush()
 
-    try:
-        from app.modules.accounts.gl_service import post_document_to_gl
-        await post_document_to_gl(db, shop_id, doc)
-    except Exception as gl_err:
-        logger.warning("GL Status Update Post Info: %s", gl_err)
+    await _sync_gl(db, shop_id, doc)
 
     await db.commit()
     return await get_document_by_id(db, shop_id, document_id)
@@ -447,6 +449,8 @@ async def update_document(
         doc.tax_amount = total_tax
         doc.grand_total = total_sub + total_tax
 
+    await db.flush()
+    await _sync_gl(db, shop_id, doc)
     await db.commit()
     return await get_document_by_id(db, shop_id, document_id)
 
@@ -455,6 +459,9 @@ async def delete_document(db: AsyncSession, shop_id: uuid.UUID, document_id: uui
     doc = await get_document_by_id(db, shop_id, document_id)
     if not doc:
         return False
+    from app.modules.accounts.posting import remove_document_gl
+
+    await remove_document_gl(db, shop_id, doc.id)
     await db.delete(doc)
     await db.commit()
     return True
@@ -492,6 +499,8 @@ async def patch_document(
         doc.recurring_interval = req.recurring_interval
     if req.next_recurring_date is not None:
         doc.next_recurring_date = req.next_recurring_date
+    await db.flush()
+    await _sync_gl(db, shop_id, doc)
     await db.commit()
     return await get_document_by_id(db, shop_id, document_id)
 
@@ -548,6 +557,7 @@ async def convert_document(
     elif source_doc.type == "INVOICE" and target_type == "RECEIPT":
         source_doc.status = "PAID"
 
+    await _sync_gl(db, shop_id, new_doc)
     await db.commit()
     return {
         "success": True,
@@ -856,6 +866,7 @@ async def generate_recurring_cycle(db: AsyncSession, shop_id: uuid.UUID, documen
     elif interval == "YEARLY":
         source_doc.next_recurring_date = curr_next + timedelta(days=365)
 
+    await _sync_gl(db, shop_id, new_doc)
     await db.commit()
     return {"success": True, "newDocId": str(new_doc.id), "doc_number": new_doc.doc_number}
 

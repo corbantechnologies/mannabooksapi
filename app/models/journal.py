@@ -24,7 +24,7 @@ class JournalEntry(Base):
     cost_center_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     source_type: Mapped[str] = mapped_column(
         "source_type",
-        SQLEnum('document', 'expense', 'income', 'payroll', 'manual', 'migrated', name="journal_source", create_type=False),
+        SQLEnum('document', 'expense', 'income', 'payroll', 'manual', 'migrated', 'opening_balance', 'year_end_close', 'payment', name="journal_source", create_type=False),
         default="manual",
         nullable=False,
     )

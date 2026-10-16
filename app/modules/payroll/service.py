@@ -240,8 +240,11 @@ async def post_payroll_to_gl(
         totals["net_pay"] = Decimal(str(doc.grand_total or 0))
         totals["custom_deductions"] = totals["gross_pay"] - totals["net_pay"]
 
-    accounts = await _ensure_payroll_accounts(db, shop_id)
+    from app.modules.accounts.posting import assert_period_open
+
     entry_date = doc.issue_date or utcnow()
+    await assert_period_open(db, shop_id, entry_date)
+    accounts = await _ensure_payroll_accounts(db, shop_id)
     entries: list[JournalEntry] = []
 
     def post(desc: str, debit: str, credit: str, amount: Decimal) -> None:
@@ -360,6 +363,9 @@ async def record_remittance(
     await db.flush()
 
     if await _gl_enabled(db, shop_id):
+        from app.modules.accounts.posting import assert_period_open
+
+        await assert_period_open(db, shop_id, payment_date)
         accounts = await _ensure_payroll_accounts(db, shop_id)
         db.add(
             JournalEntry(

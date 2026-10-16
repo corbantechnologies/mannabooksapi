@@ -25,12 +25,14 @@ ROLE_PRESET_PERMISSIONS = {
         "manage_documents", "canCreateDocuments", "manage_clients", "canEditClients",
         "manage_products", "manage_inventory_ops", "operate_pos", "manage_logistics",
         "manage_crm", "manage_expenses", "view_analytics", "view_finance", "canViewFinance",
-        "export_reports", "canExportReports", "manage_payroll", "view_cost_prices", "approve_requests"
+        "export_reports", "canExportReports", "manage_payroll", "view_cost_prices", "approve_requests",
+        "manage_accounting",
     },
     "ACCOUNTANT": {
         "manage_documents", "canCreateDocuments", "manage_clients", "canEditClients",
         "manage_expenses", "view_analytics", "view_finance", "canViewFinance",
-        "export_reports", "canExportReports", "manage_payroll", "view_cost_prices", "approve_requests"
+        "export_reports", "canExportReports", "manage_payroll", "view_cost_prices", "approve_requests",
+        "manage_accounting",
     },
     "STOREKEEPER": {
         "manage_products", "manage_inventory_ops", "manage_logistics", "canCreateDocuments"

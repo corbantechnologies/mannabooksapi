@@ -13,6 +13,12 @@ Usage (runs against DATABASE_URL from the environment / .env):
 
 Browsers still holding old cookies are simply redirected to the login page.
 """
+# Allow `python scripts/<name>.py` from the project root (adds the root to the import path).
+import os as _os
+import sys as _sys
+
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 import asyncio
 import sys
 

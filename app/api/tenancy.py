@@ -75,6 +75,7 @@ RESOURCE_MODELS: dict[str, Sequence[type]] = {
     "tier_id": (MembershipTier,),
     "expense_id": (Expense,),
     "income_id": (Income,),
+    "entry_id": (Expense, Income),
     "location_id": (StockLocation,),
     "bin_id": (StorageBin,),
     "asset_id": (FixedAsset,),
