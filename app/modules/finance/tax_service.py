@@ -116,85 +116,112 @@ async def compute_tax_schedule(
     shop_id: uuid.UUID,
     year: int,
 ) -> Dict[str, Any]:
+    """
+    Corporate income tax estimate for a calendar year, from the business records:
+      revenue (net of VAT) - credit notes + other income - expenses - payroll costs = accounting profit
+      + non-deductible expenses (flagged on the expense) - capital allowances = taxable income
+    No figures are estimated: if something isn't recorded (e.g. accounting depreciation), it is zero.
+    """
+    from app.models.expense import Income
+    from app.models.payroll import PayrollLine
+
     shop = await db.get(Shop, shop_id)
-    cit_rate = float(shop.cit_rate) if (shop and shop.cit_rate is not None) else 30.0
+    cit_rate = Decimal(str(shop.cit_rate)) if (shop and shop.cit_rate is not None) else Decimal("30")
+    zero = Decimal("0.00")
+    in_year = lambda col: func.extract("year", col) == year  # noqa: E731
 
-    # 1. Calculate Gross Revenue from Invoices / Receipts
-    inv_stmt = (
-        select(func.coalesce(func.sum(Document.grand_total), Decimal("0.00")))
-        .where(
-            and_(
-                Document.shop_id == shop_id,
-                Document.type.in_(["INVOICE", "RECEIPT"]),
-                Document.status.in_(["PAID", "ISSUED", "OVERDUE", "PARTIALLY_PAID"]),
-                func.extract("year", Document.issue_date) == year,
-            )
+    async def total(stmt) -> Decimal:
+        return Decimal((await db.execute(stmt)).scalar() or 0)
+
+    live = ["PAID", "ISSUED", "OVERDUE", "PARTIALLY_PAID"]
+    # Receipts issued against invoices only acknowledge payment; their revenue is on the invoice.
+    invoice_ids = select(Document.id).where(Document.shop_id == shop_id, Document.type == "INVOICE")
+    sales = await total(
+        select(func.coalesce(func.sum(Document.sub_total), 0)).where(
+            Document.shop_id == shop_id,
+            Document.type.in_(["INVOICE", "RECEIPT"]),
+            Document.status.in_(live),
+            in_year(Document.issue_date),
+            ~and_(Document.type == "RECEIPT", Document.parent_document_id.in_(invoice_ids)),
         )
     )
-    revenue = (await db.execute(inv_stmt)).scalar() or Decimal("0.00")
-
-    # 2. Calculate Operating Expenses
-    exp_stmt = (
-        select(func.coalesce(func.sum(Expense.amount), Decimal("0.00")))
-        .where(
-            and_(
-                Expense.shop_id == shop_id,
-                func.extract("year", Expense.expense_date) == year,
-            )
+    credit_notes = await total(
+        select(func.coalesce(func.sum(Document.sub_total), 0)).where(
+            Document.shop_id == shop_id,
+            Document.type == "CREDIT_NOTE",
+            Document.status.not_in(["DRAFT", "CANCELLED"]),
+            in_year(Document.issue_date),
         )
     )
-    expenses = (await db.execute(exp_stmt)).scalar() or Decimal("0.00")
+    other_income = await total(
+        select(func.coalesce(func.sum(Income.amount), 0)).where(Income.shop_id == shop_id, in_year(Income.income_date))
+    )
+    expenses = await total(
+        select(func.coalesce(func.sum(Expense.amount), 0)).where(Expense.shop_id == shop_id, in_year(Expense.expense_date))
+    )
+    non_deductible = await total(
+        select(func.coalesce(func.sum(Expense.amount), 0)).where(
+            Expense.shop_id == shop_id, in_year(Expense.expense_date), Expense.is_non_deductible == True  # noqa: E712
+        )
+    )
+    payroll_cost = await total(
+        select(
+            func.coalesce(
+                func.sum(PayrollLine.gross_pay + PayrollLine.nssf_employer + PayrollLine.housing_levy_employer + PayrollLine.nita), 0
+            )
+        )
+        .join(Document, Document.id == PayrollLine.document_id)
+        .where(PayrollLine.shop_id == shop_id, Document.status == "PAID", PayrollLine.period.like(f"{year:04d}-%"))
+    )
 
-    accounting_profit = revenue - expenses
+    revenue = sales - credit_notes
+    net_income = revenue + other_income - expenses - payroll_cost
 
-    # 3. Disallowable expenses & depreciation add-backs (statutory standard)
-    depreciation_add_back = (expenses * Decimal("0.05")).quantize(Decimal("0.01"))
-    disallowable_expenses = (expenses * Decimal("0.05")).quantize(Decimal("0.01"))
-
-    # 4. Capital allowances from active assets
     assets = await list_fixed_assets(db, shop_id)
-    capital_allowances = Decimal("0.00")
+    capital_allowances = zero
     for a in assets:
         if not a.is_disposed:
             r = CAPITAL_ALLOWANCE_RATES.get(a.asset_class, Decimal("0.100"))
             base = a.purchase_cost if a.asset_class == "BUILDING" else a.tax_wdv
             capital_allowances += (base * r).quantize(Decimal("0.01"))
 
-    exempt_income = Decimal("0.00")
-
-    adjusted_taxable_income = max(
-        Decimal("0.00"),
-        accounting_profit + depreciation_add_back + disallowable_expenses - capital_allowances - exempt_income,
-    )
-
-    tax_liability = (adjusted_taxable_income * Decimal(str(cit_rate / 100.0))).quantize(Decimal("0.01"))
-
-    # 5. Advance tax / instalments paid
-    inst_stmt = (
-        select(func.coalesce(func.sum(TaxInstalment.paid_amount), Decimal("0.00")))
-        .where(
-            and_(
-                TaxInstalment.shop_id == shop_id,
-                TaxInstalment.year == year,
-                TaxInstalment.status == "PAID",
-            )
+    taxable_income = max(zero, net_income + non_deductible - capital_allowances)
+    gross_tax = (taxable_income * cit_rate / Decimal("100")).quantize(Decimal("0.01"))
+    instalments_paid = await total(
+        select(func.coalesce(func.sum(TaxInstalment.paid_amount), 0)).where(
+            TaxInstalment.shop_id == shop_id, TaxInstalment.year == year, TaxInstalment.status == "PAID"
         )
     )
-    advance_tax_paid = (await db.execute(inst_stmt)).scalar() or Decimal("0.00")
-
-    net_tax_payable = max(Decimal("0.00"), tax_liability - advance_tax_paid)
+    net_tax_due = gross_tax - instalments_paid  # negative = overpaid
 
     return {
-        "accountingProfit": float(accounting_profit),
-        "depreciationAddBack": float(depreciation_add_back),
-        "disallowableExpenses": float(disallowable_expenses),
+        "year": year,
+        # Fields used by the Tax Computation screen
+        "netIncome": float(net_income),
+        "nonDeductibleExpenses": float(non_deductible),
         "capitalAllowances": float(capital_allowances),
-        "exemptIncome": float(exempt_income),
-        "adjustedTaxableIncome": float(adjusted_taxable_income),
-        "taxRate": cit_rate,
-        "taxLiability": float(tax_liability),
-        "advanceTaxPaid": float(advance_tax_paid),
-        "netTaxPayable": float(net_tax_payable),
+        "taxableIncome": float(taxable_income),
+        "citRate": float(cit_rate),
+        "grossTaxLiability": float(gross_tax),
+        "instalmentsPaid": float(instalments_paid),
+        "netTaxDue": float(net_tax_due),
+        "breakdown": {
+            "sales": float(sales),
+            "creditNotes": float(credit_notes),
+            "otherIncome": float(other_income),
+            "operatingExpenses": float(expenses),
+            "payrollCost": float(payroll_cost),
+        },
+        # Older field names (instalments and other callers)
+        "accountingProfit": float(net_income),
+        "disallowableExpenses": float(non_deductible),
+        "depreciationAddBack": 0.0,
+        "exemptIncome": 0.0,
+        "adjustedTaxableIncome": float(taxable_income),
+        "taxRate": float(cit_rate),
+        "taxLiability": float(gross_tax),
+        "advanceTaxPaid": float(instalments_paid),
+        "netTaxPayable": float(max(zero, net_tax_due)),
     }
 
 
@@ -204,7 +231,7 @@ async def compute_turnover_tax(
     year: int,
 ) -> Dict[str, Any]:
     quarters = []
-    tot_rate = 3.0  # 3% Kenya standard Turnover Tax rate
+    tot_rate = 1.5  # Kenya Turnover Tax: 1.5% of gross sales (Finance Act 2023)
 
     quarter_defs = [
         (1, "Q1 (Jan - Mar)", (1, 3)),
@@ -234,7 +261,7 @@ async def compute_turnover_tax(
         gross = res[0] if res else Decimal("0.00")
         exempt = res[1] if res else Decimal("0.00")
         taxable = max(Decimal("0.00"), gross - exempt)
-        tax_liability = (taxable * Decimal("0.03")).quantize(Decimal("0.01"))
+        tax_liability = (taxable * Decimal("0.015")).quantize(Decimal("0.01"))
 
         quarters.append({
             "quarter": q_num,
@@ -282,7 +309,7 @@ async def generate_tax_instalments(
     schedule = await compute_tax_schedule(db, shop_id, year)
     est_annual_tax = Decimal(str(schedule.get("taxLiability", 0.00)))
     if est_annual_tax <= Decimal("0.00"):
-        est_annual_tax = Decimal("40000.00")  # Baseline fallback
+        return []
 
     quarter_amount = (est_annual_tax / Decimal("4.00")).quantize(Decimal("0.01"))
 

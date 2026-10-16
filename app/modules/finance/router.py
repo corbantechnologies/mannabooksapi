@@ -239,6 +239,7 @@ async def run_capital_allowances_endpoint(
 # ==========================================
 
 @router.get("/tax/computation")
+@router.get("/tax/computation")
 @tax_router.get("/computation")
 async def get_tax_computation_endpoint(
     shop_id: uuid.UUID = Query(...),

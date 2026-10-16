@@ -88,6 +88,7 @@ def serialize_shop(shop: Shop) -> dict:
         "fiscalYearStartMonth": getattr(shop, "fiscal_year_start_month", 1),
         "isGlEnabled": getattr(shop, "is_gl_enabled", False),
         "glOnboardingMode": getattr(shop, "gl_onboarding_mode", False),
+        "hideOnboarding": bool(getattr(shop, "hide_onboarding", False)),
         "taxRegime": getattr(shop, "tax_regime", None),
         "isCitActive": bool(getattr(shop, "is_cit_active", False)),
         "isTotActive": bool(getattr(shop, "is_tot_active", False)),
@@ -532,6 +533,7 @@ class WorkspaceSettingsUpdate(BaseModel):
     fiscal_year_start_month: Optional[int] = None
     auto_stock_deduction_enabled: Optional[bool] = None
     catalog_auto_issue_quotes: Optional[bool] = None
+    hide_onboarding: Optional[bool] = None
     business_mode: Optional[str] = None
     loyalty_engine_mode: Optional[str] = None
 
@@ -649,6 +651,8 @@ async def update_workspace_settings_endpoint(
         shop.auto_stock_deduction_enabled = req.auto_stock_deduction_enabled
     if req.catalog_auto_issue_quotes is not None:
         shop.catalog_auto_issue_quotes = req.catalog_auto_issue_quotes
+    if req.hide_onboarding is not None:
+        shop.hide_onboarding = req.hide_onboarding
     if req.business_mode is not None:
         shop.business_mode = req.business_mode
     if req.loyalty_engine_mode is not None:
