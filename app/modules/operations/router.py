@@ -155,15 +155,36 @@ async def create_budget(
     m_val = req.month if req.month is not None else now.month
     y_val = req.year if req.year is not None else now.year
     limit_val = req.monthly_limit if req.monthly_limit is not None else (req.budget_amount or Decimal("0.00"))
+    if limit_val < 0:
+        raise HTTPException(status_code=400, detail="Budget amount cannot be negative")
+    if not (1 <= m_val <= 12) or not (2000 <= y_val <= 2100):
+        raise HTTPException(status_code=400, detail="Invalid budget month or year")
 
-    budget = Budget(
-        shop_id=uuid.UUID(req.shop_id),
-        account_id=uuid.UUID(req.account_id),
-        month=m_val,
-        year=y_val,
-        monthly_limit=limit_val,
-    )
-    db.add(budget)
+    from app.models.account import ChartOfAccount
+    shop_uuid = uuid.UUID(req.shop_id)
+    account = await db.get(ChartOfAccount, uuid.UUID(req.account_id))
+    if not account or account.shop_id != shop_uuid:
+        raise HTTPException(status_code=400, detail="Account not found in this workspace")
+
+    # One budget per account per month: update the existing one instead of duplicating it.
+    budget = (
+        await db.execute(
+            select(Budget).where(
+                Budget.shop_id == shop_uuid, Budget.account_id == account.id, Budget.month == m_val, Budget.year == y_val
+            )
+        )
+    ).scalars().first()
+    if budget:
+        budget.monthly_limit = limit_val
+    else:
+        budget = Budget(
+            shop_id=shop_uuid,
+            account_id=account.id,
+            month=m_val,
+            year=y_val,
+            monthly_limit=limit_val,
+        )
+        db.add(budget)
     await db.commit()
     await db.refresh(budget)
     return {"success": True, "budget": budget}
@@ -928,184 +949,7 @@ async def find_or_create_loyalty_account_by_phone_endpoint(
     }
 
 
-# -------------------------------------------------------------------------
-# Expenses & Incomes Endpoints
-# -------------------------------------------------------------------------
-class CreateExpenseRequest(BaseModel):
-    shop_id: str
-    description: str
-    amount: Decimal
-    category: str = "OTHER"
-    expense_date: Optional[datetime] = None
-    currency: str = "KES"
-    payment_channel: Optional[str] = None
-    payment_reference: Optional[str] = None
-    receipt_url: Optional[str] = None
-    is_non_deductible: bool = False
-
-    @field_validator("expense_date")
-    def validate_expense_date(cls, v):
-        return to_naive_utc(v)
-
-
-@router.get("/expenses")
-@router.get("/operations/expenses")
-async def list_expenses(
-    shop_id: uuid.UUID = Query(...),
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    db: AsyncSession = Depends(get_db),
-):
-    q = select(Expense).where(Expense.shop_id == shop_id).order_by(desc(Expense.expense_date), desc(Expense.created_at)).limit(limit).offset(offset)
-    res = await db.execute(q)
-    expenses = res.scalars().all()
-    return [
-        {
-            "id": str(e.id),
-            "shopId": str(e.shop_id),
-            "description": e.description,
-            "amount": str(e.amount),
-            "currency": e.currency,
-            "category": e.category,
-            "expenseDate": e.expense_date.isoformat() if e.expense_date else None,
-            "paymentChannel": e.payment_channel,
-            "paymentReference": e.payment_reference,
-            "receiptUrl": e.receipt_url,
-            "isNonDeductible": e.is_non_deductible,
-            "createdAt": e.created_at.isoformat() if e.created_at else None,
-        }
-        for e in expenses
-    ]
-
-
-@router.post("/expenses")
-@router.post("/operations/expenses")
-async def create_expense_endpoint(req: CreateExpenseRequest, db: AsyncSession = Depends(get_db)):
-    exp = Expense(
-        shop_id=uuid.UUID(req.shop_id),
-        description=req.description.strip(),
-        amount=req.amount,
-        category=req.category,
-        currency=req.currency,
-        expense_date=to_naive_utc(req.expense_date) or utcnow(),
-        payment_channel=req.payment_channel,
-        payment_reference=req.payment_reference,
-        receipt_url=req.receipt_url,
-        is_non_deductible=req.is_non_deductible,
-    )
-    db.add(exp)
-    await db.commit()
-    return {
-        "success": True,
-        "expense": {
-            "id": str(exp.id),
-            "shopId": str(exp.shop_id),
-            "description": exp.description,
-            "amount": str(exp.amount),
-            "category": exp.category,
-            "expenseDate": exp.expense_date.isoformat(),
-        }
-    }
-
-
-class CreateIncomeRequest(BaseModel):
-    shop_id: str
-    description: str
-    amount: Decimal
-    category: str = "OTHER"
-    income_date: Optional[datetime] = None
-    currency: str = "KES"
-    payment_channel: Optional[str] = None
-    payment_reference: Optional[str] = None
-    attachment_url: Optional[str] = None
-
-    @field_validator("income_date")
-    def validate_income_date(cls, v):
-        return to_naive_utc(v)
-
-
-@router.get("/incomes")
-@router.get("/operations/incomes")
-async def list_incomes(
-    shop_id: uuid.UUID = Query(...),
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    db: AsyncSession = Depends(get_db),
-):
-    q = select(Income).where(Income.shop_id == shop_id).order_by(desc(Income.income_date), desc(Income.created_at)).limit(limit).offset(offset)
-    res = await db.execute(q)
-    incomes = res.scalars().all()
-    return [
-        {
-            "id": str(i.id),
-            "shopId": str(i.shop_id),
-            "description": i.description,
-            "amount": str(i.amount),
-            "currency": i.currency,
-            "category": i.category,
-            "incomeDate": i.income_date.isoformat() if i.income_date else None,
-            "paymentChannel": i.payment_channel,
-            "paymentReference": i.payment_reference,
-            "attachmentUrl": i.attachment_url,
-            "createdAt": i.created_at.isoformat() if i.created_at else None,
-        }
-        for i in incomes
-    ]
-
-
-@router.post("/incomes")
-@router.post("/operations/incomes")
-async def create_income_endpoint(req: CreateIncomeRequest, db: AsyncSession = Depends(get_db)):
-    inc = Income(
-        shop_id=uuid.UUID(req.shop_id),
-        description=req.description.strip(),
-        amount=req.amount,
-        category=req.category,
-        currency=req.currency,
-        income_date=to_naive_utc(req.income_date) or utcnow(),
-        payment_channel=req.payment_channel,
-        payment_reference=req.payment_reference,
-        attachment_url=req.attachment_url,
-    )
-    db.add(inc)
-    await db.commit()
-    return {
-        "success": True,
-        "income": {
-            "id": str(inc.id),
-            "shopId": str(inc.shop_id),
-            "description": inc.description,
-            "amount": str(inc.amount),
-            "category": inc.category,
-            "incomeDate": inc.income_date.isoformat(),
-        }
-    }
-
-
-@router.delete("/expenses/{expense_id}")
-@router.delete("/operations/expenses/{expense_id}")
-async def delete_expense_endpoint(expense_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    q = select(Expense).where(Expense.id == expense_id)
-    res = await db.execute(q)
-    exp = res.scalar_one_or_none()
-    if not exp:
-        raise HTTPException(status_code=404, detail="Expense not found")
-    await db.delete(exp)
-    await db.commit()
-    return {"success": True}
-
-
-@router.delete("/incomes/{income_id}")
-@router.delete("/operations/incomes/{income_id}")
-async def delete_income_endpoint(income_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    q = select(Income).where(Income.id == income_id)
-    res = await db.execute(q)
-    inc = res.scalar_one_or_none()
-    if not inc:
-        raise HTTPException(status_code=404, detail="Income not found")
-    await db.delete(inc)
-    await db.commit()
-    return {"success": True}
+# Expenses & other income live in app/modules/cashbook.
 
 
 # ==========================================

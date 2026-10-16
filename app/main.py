@@ -22,6 +22,8 @@ from app.modules.clients.router import router as clients_router
 from app.modules.suppliers.router import router as suppliers_router
 from app.modules.items.router import router as items_router, products_router
 from app.modules.accounts.router import router as accounts_router
+from app.modules.accounts.ledger_router import router as ledger_router
+from app.modules.accounts.posting import PeriodLockedError
 from app.modules.documents.router import router as documents_router
 from app.modules.payments.router import router as payments_router
 from app.modules.reports.router import router as reports_router, analytics_router
@@ -30,6 +32,7 @@ from app.modules.hr.router import router as hr_router
 from app.modules.payroll.router import router as payroll_router, admin_router as statutory_admin_router
 from app.modules.crm.router import router as crm_router
 from app.modules.operations.router import router as operations_router, inventory_router
+from app.modules.cashbook.router import router as cashbook_router
 from app.modules.governance.router import router as governance_router
 from app.modules.admin.router import router as admin_router
 from app.modules.bills.router import router as bills_router
@@ -67,6 +70,11 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+
+@app.exception_handler(PeriodLockedError)
+async def period_locked_handler(request: Request, exc: PeriodLockedError):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 @app.exception_handler(Exception)
@@ -162,7 +170,11 @@ app.include_router(clients_router, prefix="/v1", dependencies=member)
 app.include_router(suppliers_router, prefix="/v1", dependencies=member)
 app.include_router(items_router, prefix="/v1", dependencies=member)
 app.include_router(products_router, prefix="/v1", dependencies=member)
-app.include_router(accounts_router, prefix="/v1", dependencies=finance_only)
+accounting_guard = [Depends(workspace_guard(permission="view_finance", rules=[
+    (r"^/accounts", "WRITE", "manage_accounting"),
+]))]
+app.include_router(ledger_router, prefix="/v1", dependencies=accounting_guard)
+app.include_router(accounts_router, prefix="/v1", dependencies=accounting_guard)
 app.include_router(documents_router, prefix="/v1", dependencies=[Depends(workspace_guard(
     public_paths=[r"^/documents/public/", r"^/documents/webhooks/"],
 ))])
@@ -181,6 +193,9 @@ app.include_router(payroll_router, prefix="/v1", dependencies=hr_guard)
 app.include_router(crm_router, prefix="/v1", dependencies=[Depends(workspace_guard(
     public_paths=[r"^/crm/proposals/public/"],
 ))])
+app.include_router(cashbook_router, prefix="/v1", dependencies=[Depends(workspace_guard(rules=[
+    (r"^/(operations/)?(expenses|incomes)", "WRITE", "manage_expenses"),
+]))])
 app.include_router(operations_router, prefix="/v1", dependencies=member)
 app.include_router(inventory_router, prefix="/v1", dependencies=member)
 app.include_router(governance_router, prefix="/v1", dependencies=member)

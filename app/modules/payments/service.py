@@ -69,6 +69,9 @@ async def record_payment(
     db.add(payment)
     await db.flush()
 
+    from app.modules.accounts.posting import sync_payment_gl
+    await sync_payment_gl(db, shop_id, payment, doc)
+
     # 3. Calculate total historical payments recorded for this document
     q_sum = select(func.coalesce(func.sum(DocumentPayment.amount), Decimal("0.00"))).where(
         DocumentPayment.document_id == doc.id
@@ -215,6 +218,8 @@ async def delete_payment(
         raise ValueError("Payment installment record not found")
 
     doc_id = payment.document_id
+    from app.modules.accounts.posting import remove_payment_gl
+    await remove_payment_gl(db, shop_id, payment.id)
     await db.delete(payment)
     await db.flush()
 

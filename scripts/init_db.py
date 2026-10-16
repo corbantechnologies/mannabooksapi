@@ -1,3 +1,8 @@
+# Allow `python scripts/<name>.py` from the project root (adds the root to the import path).
+import os as _os
+import sys as _sys
+
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import asyncio
 from app.db.session import engine
 from app.db.base import Base
