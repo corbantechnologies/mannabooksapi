@@ -2,9 +2,10 @@ import uuid
 from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from app.core.schemas import ApiModel
 
 
-class ClientCreateRequest(BaseModel):
+class ClientCreateRequest(ApiModel):
     name: str = Field(..., min_length=1, max_length=255)
     email: Optional[str] = ""
     phone: Optional[str] = None
@@ -13,7 +14,7 @@ class ClientCreateRequest(BaseModel):
     requires_etims: bool = False
 
 
-class ClientUpdateRequest(BaseModel):
+class ClientUpdateRequest(ApiModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     email: Optional[str] = None
     phone: Optional[str] = None
@@ -22,7 +23,7 @@ class ClientUpdateRequest(BaseModel):
     requires_etims: Optional[bool] = None
 
 
-class ClientResponse(BaseModel):
+class ClientResponse(ApiModel):
     id: uuid.UUID
     shop_id: uuid.UUID
     name: str

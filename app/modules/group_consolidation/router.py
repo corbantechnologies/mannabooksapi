@@ -16,11 +16,12 @@ from app.models.document import Document
 from app.models.bill import VendorBill
 from app.modules.auth.service import verify_and_get_session
 from app.modules.reports.service import get_pl_statement, get_balance_sheet
+from app.core.schemas import ApiModel
 
 router = APIRouter(prefix="/group-consolidation", tags=["Holding Company & Group Consolidation"])
 
 
-class CreateGroupRequest(BaseModel):
+class CreateGroupRequest(ApiModel):
     name: str
     code: str
     reporting_currency: str = "KES"
@@ -28,13 +29,13 @@ class CreateGroupRequest(BaseModel):
     initial_shop_id: Optional[str] = None
 
 
-class AddShopToGroupRequest(BaseModel):
+class AddShopToGroupRequest(ApiModel):
     shop_id: uuid.UUID
     entity_type: str = "SUBSIDIARY"
     ownership_percentage: Decimal = Decimal("100.00")
 
 
-class RecordInterCompanyTxRequest(BaseModel):
+class RecordInterCompanyTxRequest(ApiModel):
     group_id: uuid.UUID
     source_shop_id: uuid.UUID
     target_shop_id: uuid.UUID
@@ -348,7 +349,7 @@ async def get_consolidated_balance_sheet(
     }
 
 
-class ToggleEliminationRequest(BaseModel):
+class ToggleEliminationRequest(ApiModel):
     is_eliminated: bool
 
 

@@ -9,11 +9,12 @@ from app.db.session import get_db
 from app.models.identity import User
 from app.models.governance import AuditLog, Notification
 from app.api.deps import get_current_user
+from app.core.schemas import ApiModel
 
 router = APIRouter(tags=["Governance, Audit Logs & Notifications"])
 
 
-class CreateAuditLogRequest(BaseModel):
+class CreateAuditLogRequest(ApiModel):
     shop_id: str
     action: str
     table_name: str
@@ -24,7 +25,7 @@ class CreateAuditLogRequest(BaseModel):
     ip_address: Optional[str] = None
 
 
-class CreateNotificationRequest(BaseModel):
+class CreateNotificationRequest(ApiModel):
     user_id: str
     shop_id: Optional[str] = None
     title: str

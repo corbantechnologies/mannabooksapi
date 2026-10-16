@@ -7,7 +7,7 @@ from typing import Optional, List, Any, Dict
 from pydantic import BaseModel, field_validator
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc
+from sqlalchemy import select, and_, desc, func
 
 from app.db.session import get_db
 from app.models.identity import User, Shop
@@ -26,6 +26,7 @@ from app.core.config import get_settings
 from app.api.deps import get_current_user, verify_internal_api_key, get_principal, Principal
 from app.core.datetime_utils import to_naive_utc
 from app.core.datetime_utils import utcnow
+from app.core.schemas import ApiModel
 
 settings = get_settings()
 
@@ -59,7 +60,7 @@ async def _resolve_shop_id(db: AsyncSession, shop_id: Optional[str] = None, shop
 # -------------------------------------------------------------------------
 # Request Models
 # -------------------------------------------------------------------------
-class CreateBudgetRequest(BaseModel):
+class CreateBudgetRequest(ApiModel):
     shop_id: str
     account_id: str
     month: Optional[int] = None
@@ -72,7 +73,7 @@ class CreateBudgetRequest(BaseModel):
     notes: Optional[str] = None
 
 
-class CreateCostCenterRequest(BaseModel):
+class CreateCostCenterRequest(ApiModel):
     shop_id: str
     code: str
     name: str
@@ -82,13 +83,13 @@ class CreateCostCenterRequest(BaseModel):
     budget_amount: Decimal = Decimal("0.00")
 
 
-class CreateBomItemRequest(BaseModel):
+class CreateBomItemRequest(ApiModel):
     raw_material_product_id: str
     quantity_required: Decimal
     wastage_percentage: Decimal = Decimal("0.00")
 
 
-class CreateBomRequest(BaseModel):
+class CreateBomRequest(ApiModel):
     shop_id: str
     finished_product_id: str
     name: str
@@ -97,7 +98,7 @@ class CreateBomRequest(BaseModel):
     items: List[CreateBomItemRequest]
 
 
-class CreateProductionOrderRequest(BaseModel):
+class CreateProductionOrderRequest(ApiModel):
     shop_id: str
     bom_id: str
     target_location_id: str
@@ -106,7 +107,7 @@ class CreateProductionOrderRequest(BaseModel):
     notes: Optional[str] = None
 
 
-class LoyaltyProgramUpdateRequest(BaseModel):
+class LoyaltyProgramUpdateRequest(ApiModel):
     shop_id: str
     name: str = "Customer Rewards"
     points_per_kes: Decimal = Decimal("0.01")
@@ -116,7 +117,7 @@ class LoyaltyProgramUpdateRequest(BaseModel):
     is_active: bool = True
 
 
-class AdjustLoyaltyPointsRequest(BaseModel):
+class AdjustLoyaltyPointsRequest(ApiModel):
     shop_id: str
     client_id: str
     points: int  # Positive for earn, negative for redeem
@@ -132,6 +133,8 @@ class AdjustLoyaltyPointsRequest(BaseModel):
 async def list_budgets(
     shop_id: Optional[str] = Query(None, description="Workspace ID"),
     shop_slug: Optional[str] = Query(None, description="Workspace slug"),
+    year: Optional[int] = Query(None, ge=2000, le=2100),
+    month: Optional[int] = Query(None, ge=1, le=12),
     auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
@@ -139,10 +142,65 @@ async def list_budgets(
     if not sid:
         return {"success": True, "budgets": []}
 
-    q = select(Budget).where(Budget.shop_id == sid).order_by(desc(Budget.created_at))
+    q = select(Budget).where(Budget.shop_id == sid)
+    if year:
+        q = q.where(Budget.year == year)
+    if month:
+        q = q.where(Budget.month == month)
+    q = q.order_by(desc(Budget.created_at))
     res = await db.execute(q)
     budgets = res.scalars().all()
-    return {"success": True, "budgets": budgets}
+
+    # Budget vs actual per expense account for the selected month (actuals from the general ledger).
+    import calendar
+    from datetime import datetime as _dt
+    from app.models.account import ChartOfAccount
+    from app.models.journal import JournalEntry
+
+    now = utcnow()
+    y, m = year or now.year, month or now.month
+    lo = _dt(y, m, 1)
+    hi = _dt(y, m, calendar.monthrange(y, m)[1], 23, 59, 59)
+    accounts = (
+        await db.execute(
+            select(ChartOfAccount)
+            .where(ChartOfAccount.shop_id == sid, ChartOfAccount.account_type == "EXPENSE")
+            .order_by(ChartOfAccount.code)
+        )
+    ).scalars().all()
+    debits = dict(
+        (await db.execute(
+            select(JournalEntry.debit_account_id, func.coalesce(func.sum(JournalEntry.amount), 0))
+            .where(JournalEntry.shop_id == sid, JournalEntry.entry_date >= lo, JournalEntry.entry_date <= hi)
+            .group_by(JournalEntry.debit_account_id)
+        )).all()
+    )
+    credits = dict(
+        (await db.execute(
+            select(JournalEntry.credit_account_id, func.coalesce(func.sum(JournalEntry.amount), 0))
+            .where(JournalEntry.shop_id == sid, JournalEntry.entry_date >= lo, JournalEntry.entry_date <= hi)
+            .group_by(JournalEntry.credit_account_id)
+        )).all()
+    )
+    month_budgets = {b.account_id: b for b in budgets if b.year == y and b.month == m}
+    lines = []
+    for acc in accounts:
+        actual = Decimal(debits.get(acc.id, 0)) - Decimal(credits.get(acc.id, 0))
+        b = month_budgets.get(acc.id)
+        limit = Decimal(b.monthly_limit) if b else None
+        pct = float((actual / limit * 100).quantize(Decimal("0.1"))) if limit else None
+        lines.append({
+            "accountId": str(acc.id),
+            "accountCode": acc.code,
+            "accountName": acc.name,
+            "budgetId": str(b.id) if b else None,
+            "monthlyLimit": float(limit) if limit is not None else None,
+            "actual": float(actual),
+            "percentUsed": pct,
+            "isOverBudget": bool(limit is not None and actual > limit),
+            "isWarning": bool(pct is not None and 80 <= pct < 100),
+        })
+    return {"success": True, "budgets": budgets, "lines": lines, "month": m, "year": y}
 
 
 @router.post("/operations/budgets")
@@ -724,7 +782,7 @@ async def update_loyalty_program(
     return {"success": True, "program": prog}
 
 
-class CreateTierRequest(BaseModel):
+class CreateTierRequest(ApiModel):
     shop_id: str
     name: str
     min_points: int = 0
@@ -752,10 +810,10 @@ async def create_loyalty_tier(req: CreateTierRequest, db: AsyncSession = Depends
         "data": {
             "id": str(tier.id),
             "name": tier.name,
-            "minSpendKes": str(tier.min_points),
-            "discountPercent": str(tier.discount_percentage),
-            "pointsMultiplier": "1.0",
-            "badgeColor": "#000000",
+            "minSpendKes": str(tier.min_spend_kes),
+            "discountPercent": str(tier.discount_percent),
+            "pointsMultiplier": str(tier.points_multiplier),
+            "badgeColor": tier.badge_color or "#000000",
             "displayOrder": tier.display_order,
         }
     }
@@ -837,7 +895,7 @@ async def adjust_loyalty_points(
     }
 
 
-class PhoneLoyaltyRequest(BaseModel):
+class PhoneLoyaltyRequest(ApiModel):
     shop_id: str
     phone: str
     customer_name: Optional[str] = None
@@ -861,8 +919,7 @@ async def get_client_loyalty_account_endpoint(
             client_id=client_id,
             member_number=f"MEM-{secrets.token_hex(3).upper()}",
             current_points=0,
-            lifetime_points_earned=0,
-            lifetime_points_redeemed=0,
+            lifetime_points=0,
             wallet_balance_kes=Decimal("0.00"),
         )
         db.add(acc)

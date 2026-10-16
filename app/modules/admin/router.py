@@ -10,32 +10,33 @@ from app.db.session import get_db
 from app.api.deps import require_super_admin
 from app.models.identity import User, Shop, ShopMember, Session
 from app.models.document import Document
+from app.core.schemas import ApiModel
 
 router = APIRouter(prefix="/admin", tags=["Global Admin"], dependencies=[Depends(require_super_admin)])
 
 
-class UpdateWorkspacePlanRequest(BaseModel):
+class UpdateWorkspacePlanRequest(ApiModel):
     plan: str
     is_lifetime_pro: bool
     subscription_status: Optional[str] = "ACTIVE"
 
 
-class ToggleWorkspaceSuspensionRequest(BaseModel):
+class ToggleWorkspaceSuspensionRequest(ApiModel):
     is_suspended: bool
     reason: Optional[str] = None
 
 
-class UpdateUserSubscriptionRequest(BaseModel):
+class UpdateUserSubscriptionRequest(ApiModel):
     plan: str
     is_lifetime_pro: bool
     subscription_expires_at: Optional[str] = None
 
 
-class ToggleUserLifetimeRequest(BaseModel):
+class ToggleUserLifetimeRequest(ApiModel):
     is_lifetime_pro: bool
 
 
-class ToggleSuperAdminRequest(BaseModel):
+class ToggleSuperAdminRequest(ApiModel):
     is_super_admin: bool
 
 

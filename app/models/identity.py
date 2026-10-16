@@ -41,6 +41,10 @@ class User(Base):
     tokens_valid_after: Mapped[Optional[datetime]] = mapped_column("tokens_valid_after", DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
+    # Read-only navigation used by the admin console.
+    owned_shops = relationship("Shop", foreign_keys="Shop.owner_id", viewonly=True)
+    memberships = relationship("ShopMember", foreign_keys="ShopMember.user_id", viewonly=True)
+
 
 class RevokedToken(Base):
     """Denylist of individual JWTs (by jti) revoked at logout, kept until they expire."""
@@ -123,6 +127,10 @@ class Shop(Base):
     subscription_expires_at: Mapped[Optional[datetime]] = mapped_column("subscription_expires_at", DateTime, nullable=True)
     grace_period_ends_at: Mapped[Optional[datetime]] = mapped_column("grace_period_ends_at", DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    # Read-only navigation used by the admin console.
+    owner = relationship("User", foreign_keys=[owner_id], viewonly=True)
+    members = relationship("ShopMember", foreign_keys="ShopMember.shop_id", viewonly=True)
 
 
 class ShopTerm(Base):

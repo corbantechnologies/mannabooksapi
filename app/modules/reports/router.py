@@ -34,11 +34,13 @@ logger = logging.getLogger("mannabooks.api")
 @router.get("/pl", response_model=PLStatementResponse)
 async def get_pl_statement_endpoint(
     shop_id: uuid.UUID = Query(...),
-    period: str = Query("THIS_MONTH"),
+    period: Optional[str] = Query(None),
+    timeframe: Optional[str] = Query(None),
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
+    period = (period or timeframe or "THIS_MONTH").upper()
     try:
         return await get_pl_statement(
             db, shop_id=shop_id, period=period, start_date=start_date, end_date=end_date
@@ -263,11 +265,13 @@ async def get_payables_aging_endpoint(
 @router.get("/cashflow")
 async def get_cashflow_statement_endpoint(
     shop_id: uuid.UUID = Query(...),
-    period: str = Query("THIS_MONTH"),
+    period: Optional[str] = Query(None),
+    timeframe: Optional[str] = Query(None),
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
+    period = (period or timeframe or "THIS_MONTH").upper()
     from sqlalchemy import select, func, and_
     from app.models.document import Document
     from app.models.bill import VendorBill
@@ -518,7 +522,14 @@ async def get_analytics_overview(
     overdue90Plus = 0.0
     totalAr = 0.0
 
-    q_unpaid = select(Document.issue_date, Document.balance_due, Document.grand_total).where(
+    from app.models.payment import DocumentPayment as _DP
+    _paid = (
+        select(func.coalesce(func.sum(_DP.amount), 0))
+        .where(_DP.document_id == Document.id)
+        .correlate(Document)
+        .scalar_subquery()
+    )
+    q_unpaid = select(Document.issue_date, Document.grand_total - _paid, Document.grand_total).where(
         and_(
             Document.shop_id == shop_id,
             Document.type == "INVOICE",
@@ -554,9 +565,9 @@ async def get_analytics_overview(
     # 4. Top Selling Products
     q_top_prod = (
         select(
-            DocumentItem.item_name,
+            DocumentItem.description,
             func.sum(DocumentItem.quantity).label("qty"),
-            func.sum(DocumentItem.total_price).label("tot")
+            func.sum(DocumentItem.item_total).label("tot")
         )
         .join(Document, Document.id == DocumentItem.document_id)
         .where(
@@ -568,7 +579,7 @@ async def get_analytics_overview(
                 Document.status != "CANCELLED",
             )
         )
-        .group_by(DocumentItem.item_name)
+        .group_by(DocumentItem.description)
         .order_by(desc("tot"))
         .limit(10)
     )
@@ -664,8 +675,8 @@ async def get_analytics_overview(
         q_m_out = select(func.coalesce(func.sum(Expense.amount), 0.0)).where(
             and_(
                 Expense.shop_id == shop_id,
-                Expense.date >= m_start,
-                Expense.date <= m_end,
+                Expense.expense_date >= m_start,
+                Expense.expense_date <= m_end,
             )
         )
         res_m_out = await db.execute(q_m_out)

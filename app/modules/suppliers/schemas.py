@@ -2,9 +2,10 @@ import uuid
 from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from app.core.schemas import ApiModel
 
 
-class SupplierCreateRequest(BaseModel):
+class SupplierCreateRequest(ApiModel):
     name: str = Field(..., min_length=2, max_length=255)
     email: Optional[str] = None
     phone: Optional[str] = None
@@ -14,7 +15,7 @@ class SupplierCreateRequest(BaseModel):
     payment_terms: str = "NET_30"
 
 
-class SupplierUpdateRequest(BaseModel):
+class SupplierUpdateRequest(ApiModel):
     name: Optional[str] = Field(None, min_length=2, max_length=255)
     email: Optional[str] = None
     phone: Optional[str] = None
@@ -24,7 +25,7 @@ class SupplierUpdateRequest(BaseModel):
     payment_terms: Optional[str] = None
 
 
-class SupplierResponse(BaseModel):
+class SupplierResponse(ApiModel):
     id: uuid.UUID
     shop_id: uuid.UUID
     name: str

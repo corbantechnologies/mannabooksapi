@@ -36,6 +36,7 @@ from app.modules.auth.tokens import (
     start_session,
 )
 from app.core.datetime_utils import utcnow
+from app.core.schemas import ApiModel
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -44,11 +45,11 @@ INVALID_CREDENTIALS = "Invalid email address or password."
 _DUMMY_HASH = hash_password(secrets.token_hex(16))
 
 
-class RefreshRequest(BaseModel):
+class RefreshRequest(ApiModel):
     refresh_token: str = Field(..., min_length=20, max_length=200)
 
 
-class LogoutRequest(BaseModel):
+class LogoutRequest(ApiModel):
     refresh_token: str | None = Field(None, max_length=200)
 
 

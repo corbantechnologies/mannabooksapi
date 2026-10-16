@@ -37,6 +37,7 @@ from app.modules.payroll.service import (
     statutory_position,
 )
 from app.core.datetime_utils import utcnow
+from app.core.schemas import ApiModel
 
 router = APIRouter(tags=["Payroll & Statutory"])
 admin_router = APIRouter(prefix="/admin/statutory-rates", tags=["Global Admin"], dependencies=[Depends(require_super_admin)])
@@ -48,7 +49,7 @@ def _alias(*names: str):
     return Field(default=None, validation_alias=AliasChoices(*names))
 
 
-class PayrollLineInput(BaseModel):
+class PayrollLineInput(ApiModel):
     employee_id: Optional[str] = _alias("employee_id", "employeeId")
     employee_name: Optional[str] = _alias("employee_name", "employeeName")
     basic_salary: Decimal = Field(Decimal("0"), validation_alias=AliasChoices("basic_salary", "base_salary", "baseSalary", "basicSalary"))
@@ -66,7 +67,7 @@ class PayrollLineInput(BaseModel):
         return v
 
 
-class CalculateRequest(BaseModel):
+class CalculateRequest(ApiModel):
     shop_id: Optional[str] = _alias("shop_id", "shopId")
     period: Optional[str] = _alias("period", "payroll_period_code", "payrollPeriodCode")
     mode: str = "KENYA_STATUTORY"
@@ -78,7 +79,7 @@ class GeneratePayrollRequest(CalculateRequest):
     issue_date: Optional[datetime] = _alias("issue_date", "issueDate")
 
 
-class RemittanceRequest(BaseModel):
+class RemittanceRequest(ApiModel):
     shop_id: uuid.UUID
     authority: str
     period: str
@@ -348,7 +349,7 @@ async def get_p9(
 # ---------------------------------------------------------------------------
 # Super admin: statutory rate sets
 # ---------------------------------------------------------------------------
-class RateSetRequest(BaseModel):
+class RateSetRequest(ApiModel):
     name: str = Field(..., min_length=3, max_length=120)
     effective_from: date
     rates: dict
@@ -357,7 +358,7 @@ class RateSetRequest(BaseModel):
     country: str = "KE"
 
 
-class RateSetUpdate(BaseModel):
+class RateSetUpdate(ApiModel):
     name: Optional[str] = Field(None, min_length=3, max_length=120)
     rates: Optional[dict] = None
     is_verified: Optional[bool] = None

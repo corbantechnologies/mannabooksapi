@@ -18,11 +18,29 @@ from app.models.account import ChartOfAccount
 from app.models.identity import Shop
 from app.core.datetime_utils import to_naive_utc
 from app.core.datetime_utils import utcnow
+from app.core.schemas import ApiModel
+
+async def resolve_shop_id(
+    shop_id: Optional[uuid.UUID] = Query(None),
+    shop_slug: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+) -> uuid.UUID:
+    """Workspace from ?shop_id= or ?shop_slug= (the bills screen sends the slug)."""
+    if shop_id:
+        return shop_id
+    if shop_slug:
+        from app.models.identity import Shop
+
+        sid = (await db.execute(select(Shop.id).where(Shop.slug == shop_slug))).scalar_one_or_none()
+        if sid:
+            return sid
+    raise HTTPException(status_code=400, detail="shop_id or shop_slug is required")
+
 
 router = APIRouter(prefix="/bills", tags=["Vendor Bills & 3-Way Matching"], dependencies=[Depends(verify_internal_api_key)])
 
 
-class BillItemInput(BaseModel):
+class BillItemInput(ApiModel):
     account_id: uuid.UUID
     description: str
     quantity: Decimal = Decimal("1.00")
@@ -33,7 +51,7 @@ class BillItemInput(BaseModel):
     grn_quantity: Optional[Decimal] = None
 
 
-class CreateBillRequest(BaseModel):
+class CreateBillRequest(ApiModel):
     supplier_id: uuid.UUID
     reference: Optional[str] = None
     bill_date: Optional[datetime] = None
@@ -60,7 +78,7 @@ class CreateBillRequest(BaseModel):
         return to_naive_utc(self.due_date)
 
 
-class PayBillRequest(BaseModel):
+class PayBillRequest(ApiModel):
     payment_amount: Decimal
     payment_channel: str
     payment_reference: str
@@ -138,7 +156,7 @@ def format_bill_dict(b: VendorBill) -> Dict[str, Any]:
 
 @router.get("")
 async def list_bills(
-    shop_id: uuid.UUID = Query(...),
+    shop_id: uuid.UUID = Depends(resolve_shop_id),
     status: Optional[str] = Query(None),
     supplier_id: Optional[uuid.UUID] = Query(None),
     db: AsyncSession = Depends(get_db),
@@ -167,7 +185,7 @@ async def list_bills(
 
 @router.get("/approved-pos-grns")
 async def get_approved_pos_and_grns(
-    shop_id: uuid.UUID = Query(...),
+    shop_id: uuid.UUID = Depends(resolve_shop_id),
     supplier_id: Optional[uuid.UUID] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
@@ -234,7 +252,7 @@ async def get_approved_pos_and_grns(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_bill(
     req: CreateBillRequest,
-    shop_id: uuid.UUID = Query(...),
+    shop_id: uuid.UUID = Depends(resolve_shop_id),
     db: AsyncSession = Depends(get_db),
 ):
     # Verify supplier exists
@@ -340,7 +358,7 @@ async def create_bill(
 async def pay_bill(
     bill_id: uuid.UUID,
     req: PayBillRequest,
-    shop_id: uuid.UUID = Query(...),
+    shop_id: uuid.UUID = Depends(resolve_shop_id),
     db: AsyncSession = Depends(get_db),
 ):
     bill = await db.get(VendorBill, bill_id)

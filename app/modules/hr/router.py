@@ -18,6 +18,7 @@ from app.models.document import Document, DocumentItem
 from app.models.journal import JournalEntry
 from app.modules.auth.service import verify_and_get_session
 from app.core.datetime_utils import utcnow
+from app.core.schemas import ApiModel
 
 router = APIRouter(tags=["HR, Payroll & ESS"])
 
@@ -25,7 +26,7 @@ router = APIRouter(tags=["HR, Payroll & ESS"])
 # -------------------------------------------------------------------------
 # Request Models
 # -------------------------------------------------------------------------
-class CreateEmployeeRequest(BaseModel):
+class CreateEmployeeRequest(ApiModel):
     shop_id: str
     full_name: str
     email: Optional[str] = None
@@ -44,7 +45,7 @@ class CreateEmployeeRequest(BaseModel):
     mpesa_phone: Optional[str] = None
 
 
-class UpdateEmployeeRequest(BaseModel):
+class UpdateEmployeeRequest(ApiModel):
     full_name: Optional[str] = None
     email: Optional[str] = None
     national_id: Optional[str] = None
@@ -63,11 +64,11 @@ class UpdateEmployeeRequest(BaseModel):
     is_active: Optional[bool] = None
 
 
-class LinkUserRequest(BaseModel):
+class LinkUserRequest(ApiModel):
     user_id: str
 
 
-class CreateExpenseClaimRequest(BaseModel):
+class CreateExpenseClaimRequest(ApiModel):
     shop_id: str
     employee_id: str
     title: str
@@ -80,12 +81,12 @@ class CreateExpenseClaimRequest(BaseModel):
     submit_now: bool = False
 
 
-class ReviewExpenseClaimRequest(BaseModel):
+class ReviewExpenseClaimRequest(ApiModel):
     decision: str  # APPROVED or REJECTED
     notes: Optional[str] = None
 
 
-class DisburseExpenseClaimRequest(BaseModel):
+class DisburseExpenseClaimRequest(ApiModel):
     payment_channel: str = "BANK"
     payment_reference: Optional[str] = None
     payment_date: Optional[str] = None
@@ -205,7 +206,7 @@ async def get_employee(
 async def update_employee(
     employee_id: str,
     req: UpdateEmployeeRequest,
-    shop_id: str = Query(..., description="Workspace ID"),
+    shop_id: Optional[str] = Query(None, description="Workspace ID (optional; the employee identifies it)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -213,7 +214,10 @@ async def update_employee(
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    q = select(Employee).where(Employee.id == employee_id, Employee.shop_id == shop_id)
+    # The tenant guard has already checked membership of the employee's workspace.
+    q = select(Employee).where(Employee.id == employee_id)
+    if shop_id:
+        q = q.where(Employee.shop_id == shop_id)
     res = await db.execute(q)
     emp = res.scalar_one_or_none()
     if not emp:

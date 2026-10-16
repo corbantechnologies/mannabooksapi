@@ -3,9 +3,10 @@ from datetime import date, datetime
 from typing import Optional, Dict, Any, List
 from decimal import Decimal
 from pydantic import BaseModel, Field
+from app.core.schemas import ApiModel
 
 
-class TaxSettingsDTO(BaseModel):
+class TaxSettingsDTO(ApiModel):
     isCitActive: bool = True
     isTotActive: bool = False
     citRate: float = 30.00
@@ -16,7 +17,7 @@ class TaxSettingsDTO(BaseModel):
     taxRegime: str = "EXEMPT"
 
 
-class TaxSettingsResponse(BaseModel):
+class TaxSettingsResponse(ApiModel):
     success: bool = True
     shop_id: str
     isCitActive: bool = True
@@ -30,7 +31,7 @@ class TaxSettingsResponse(BaseModel):
     settings: Optional[TaxSettingsDTO] = None
 
 
-class UpdateTaxSettingsRequest(BaseModel):
+class UpdateTaxSettingsRequest(ApiModel):
     shop_id: uuid.UUID
     isCitActive: Optional[bool] = None
     is_cit_active: Optional[bool] = None
@@ -50,7 +51,7 @@ class UpdateTaxSettingsRequest(BaseModel):
     tax_regime: Optional[str] = None
 
 
-class CreateFixedAssetRequest(BaseModel):
+class CreateFixedAssetRequest(ApiModel):
     shop_id: uuid.UUID
     name: str
     assetClass: Optional[str] = None
@@ -63,7 +64,7 @@ class CreateFixedAssetRequest(BaseModel):
     scrap_value: Optional[Decimal] = Decimal("0.00")
 
 
-class DisposeFixedAssetRequest(BaseModel):
+class DisposeFixedAssetRequest(ApiModel):
     shop_id: uuid.UUID
     disposalDate: Optional[date] = None
     disposal_date: Optional[date] = None
@@ -71,17 +72,17 @@ class DisposeFixedAssetRequest(BaseModel):
     disposal_proceeds: Optional[Decimal] = None
 
 
-class CapitalAllowancesRequest(BaseModel):
+class CapitalAllowancesRequest(ApiModel):
     shop_id: uuid.UUID
     year: int = 2026
 
 
-class GenerateInstalmentsRequest(BaseModel):
+class GenerateInstalmentsRequest(ApiModel):
     shop_id: uuid.UUID
     year: int = 2026
 
 
-class PayInstalmentRequest(BaseModel):
+class PayInstalmentRequest(ApiModel):
     shop_id: uuid.UUID
     paidAmount: Optional[Decimal] = None
     paid_amount: Optional[Decimal] = None

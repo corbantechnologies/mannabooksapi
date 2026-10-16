@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc
 
@@ -12,11 +12,12 @@ from app.api.deps import verify_internal_api_key
 from app.models.document import Document
 from app.models.bill import VendorBill
 from app.models.identity import Shop
+from app.core.schemas import ApiModel
 
 router = APIRouter(prefix="/approvals", tags=["Approvals Workflow Engine"], dependencies=[Depends(verify_internal_api_key)])
 
 
-class CreateApprovalRequest(BaseModel):
+class CreateApprovalRequest(ApiModel):
     shop_id: uuid.UUID
     title: str
     entity_type: str = "DOCUMENT"
@@ -26,8 +27,8 @@ class CreateApprovalRequest(BaseModel):
     notes: Optional[str] = None
 
 
-class ApprovalDecisionRequest(BaseModel):
-    action: str  # "APPROVED" or "REJECTED"
+class ApprovalDecisionRequest(ApiModel):
+    action: str = Field(..., validation_alias=AliasChoices("action", "decision"))  # "APPROVED" or "REJECTED"
     reason: Optional[str] = None
     approver_id: Optional[uuid.UUID] = None
 

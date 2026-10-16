@@ -14,11 +14,12 @@ from app.api.deps import verify_internal_api_key, require_internal_service
 logger = logging.getLogger("mannabooks.billing")
 from app.models.identity import BillingTransaction, Shop, User
 from app.core.datetime_utils import utcnow
+from app.core.schemas import ApiModel
 
 router = APIRouter(prefix="/billing", tags=["Subscription Billing & M-Pesa"])
 
 
-class InitiateBillingRequest(BaseModel):
+class InitiateBillingRequest(ApiModel):
     shop_id: uuid.UUID
     checkout_request_id: str
     merchant_request_id: Optional[str] = None
@@ -28,7 +29,7 @@ class InitiateBillingRequest(BaseModel):
     billing_months: int = 1
 
 
-class UpdateBillingStatusRequest(BaseModel):
+class UpdateBillingStatusRequest(ApiModel):
     status: str
     result_code: Optional[int] = None
     result_desc: Optional[str] = None

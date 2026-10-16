@@ -31,6 +31,7 @@ from app.modules.accounts.posting import (
     remove_source_entries,
     repair_ledger,
 )
+from app.core.schemas import ApiModel
 
 router = APIRouter(prefix="/accounts", tags=["General Ledger"])
 
@@ -57,7 +58,7 @@ async def _own_accounts(db: AsyncSession, shop_id: uuid.UUID, ids: set[uuid.UUID
 # ---------------------------------------------------------------------------
 # Fiscal years & periods
 # ---------------------------------------------------------------------------
-class DeclareFiscalYearRequest(BaseModel):
+class DeclareFiscalYearRequest(ApiModel):
     shop_id: uuid.UUID
     label: str = Field(..., min_length=2, max_length=100)
     start_date: Optional[str] = None
@@ -182,6 +183,20 @@ async def fiscal_year_detail(fy_id: uuid.UUID, shop_id: uuid.UUID = Query(...), 
             "status": "CLOSED" if all(p.status == "CLOSED" for p in q_periods) else "OPEN",
         })
 
+    period_rows = []
+    for idx, p in enumerate(periods, start=1):
+        _, p_rev, p_exp, p_count, p_total = await _pl_summary(db, shop_id, p.start_date, p.end_date, exclude_source=fy.id)
+        r, x = sum(p_rev.values(), Decimal("0")), sum(p_exp.values(), Decimal("0"))
+        period_rows.append({
+            "id": str(p.id), "periodName": p.period_name, "startDate": str(p.start_date), "endDate": str(p.end_date),
+            "status": p.status, "closedAt": p.closed_at.isoformat() if p.closed_at else None, "closedByName": None,
+            "fiscalYearId": str(fy.id), "fiscalYearLabel": fy.label, "monthIndex": idx,
+            "revenue": float(r), "expenses": float(x), "netProfit": float(r - x),
+            "netMargin": float(((r - x) / r * 100).quantize(CENT)) if r else 0.0,
+            "entryCount": p_count, "totalDebits": float(p_total), "totalCredits": float(p_total), "isBalanced": True,
+            "sourceCounts": {}, "topRevenue": _top(p_rev, accounts, r)[:3], "topExpenses": _top(p_exp, accounts, x)[:3],
+        })
+
     closed = [p for p in periods if p.status == "CLOSED"]
     unclosed = [p.period_name for p in periods if p.status != "CLOSED"]
     re_acc = next((a for a in accounts.values() if a.code == RETAINED_EARNINGS), None)
@@ -189,12 +204,7 @@ async def fiscal_year_detail(fy_id: uuid.UUID, shop_id: uuid.UUID = Query(...), 
         "success": True,
         "fiscalYear": {"id": str(fy.id), "label": fy.label, "startDate": str(fy.start_date), "endDate": str(fy.end_date),
                        "isClosed": bool(fy.is_closed), "isCurrent": bool(fy.is_current)},
-        "periods": [
-            {"id": str(p.id), "periodName": p.period_name, "startDate": str(p.start_date), "endDate": str(p.end_date),
-             "status": p.status, "closedAt": p.closed_at.isoformat() if p.closed_at else None,
-             "fiscalYearId": str(fy.id), "fiscalYearLabel": fy.label}
-            for p in periods
-        ],
+        "periods": period_rows,
         "kpis": {
             "totalRevenue": float(total_rev), "totalExpenses": float(total_exp),
             "netProfit": float(net), "netIncome": float(net),
@@ -218,7 +228,7 @@ async def fiscal_year_detail(fy_id: uuid.UUID, shop_id: uuid.UUID = Query(...), 
     }
 
 
-class ShopBody(BaseModel):
+class ShopBody(ApiModel):
     shop_id: uuid.UUID
 
 
@@ -365,7 +375,7 @@ async def reopen_period(period_id: uuid.UUID, request: Request, db: AsyncSession
 # ---------------------------------------------------------------------------
 # Journals
 # ---------------------------------------------------------------------------
-class ManualJournalRequest(BaseModel):
+class ManualJournalRequest(ApiModel):
     entry_date: Optional[datetime] = None
     description: str = Field(..., min_length=2, max_length=500)
     debit_account_id: uuid.UUID
@@ -406,14 +416,14 @@ async def create_manual_journal(req: ManualJournalRequest, request: Request, sho
                                        "amount": str(e.amount), "reference": ref}}
 
 
-class JournalLine(BaseModel):
+class JournalLine(ApiModel):
     account_id: uuid.UUID
     debit_amount: Decimal = Decimal("0")
     credit_amount: Decimal = Decimal("0")
     line_description: Optional[str] = Field(None, max_length=500)
 
 
-class CompoundJournalRequest(BaseModel):
+class CompoundJournalRequest(ApiModel):
     entry_date: Optional[datetime] = None
     description: str = Field("Journal entry", max_length=500)
     reference_number: Optional[str] = Field(None, max_length=100)
@@ -471,13 +481,13 @@ async def create_compound_journal(req: CompoundJournalRequest, request: Request,
     return {"success": True, "count": len(entries), "reference": ref, "batchId": str(batch), "total": str(total_d)}
 
 
-class OpeningLine(BaseModel):
+class OpeningLine(ApiModel):
     accountId: uuid.UUID = Field(..., validation_alias=AliasChoices("accountId", "account_id"))
     debit: Decimal = Field(Decimal("0"), validation_alias=AliasChoices("debit", "debitAmount", "debit_amount"))
     credit: Decimal = Field(Decimal("0"), validation_alias=AliasChoices("credit", "creditAmount", "credit_amount"))
 
 
-class OpeningBalancesRequest(BaseModel):
+class OpeningBalancesRequest(ApiModel):
     as_of_date: Optional[datetime] = None
     lines: List[OpeningLine] = Field(default_factory=list, max_length=500)
 

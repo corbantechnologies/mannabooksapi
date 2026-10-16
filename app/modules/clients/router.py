@@ -1,3 +1,4 @@
+from datetime import datetime
 import uuid
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -74,14 +75,22 @@ async def delete_client_endpoint(
 async def get_client_statement_endpoint(
     client_id: uuid.UUID,
     shop_id: Optional[uuid.UUID] = Query(None),
-    period: str = Query("ALL"),
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.modules.reports.service import get_client_statement
+    from app.core.datetime_utils import to_naive_utc
     from app.models.client import Client
+    from app.modules.clients.service import get_client_statement
+
     client = await db.get(Client, client_id)
     if not client:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
-    target_shop_id = shop_id or client.shop_id
-    return await get_client_statement(db, shop_id=target_shop_id, client_id=client_id, period=period)
+    result = await get_client_statement(
+        db, shop_id=shop_id or client.shop_id, client_id=client_id,
+        start_date=to_naive_utc(start_date), end_date=to_naive_utc(end_date),
+    )
+    if not result.get("success"):
+        raise HTTPException(status_code=404, detail=result.get("error", "Client not found"))
+    return result
 

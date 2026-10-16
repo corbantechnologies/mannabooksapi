@@ -1,9 +1,10 @@
 import uuid
 from typing import Optional, List
 from pydantic import BaseModel, Field
+from app.core.schemas import ApiModel
 
 
-class EtimsInitRequest(BaseModel):
+class EtimsInitRequest(ApiModel):
     shop_id: uuid.UUID
     kra_pin: str = Field(..., pattern=r"^[A-Z0-9]{11}$", description="Kenyan KRA PIN (11 chars)")
     branch_id: str = "00"
@@ -12,7 +13,7 @@ class EtimsInitRequest(BaseModel):
     environment: str = "SANDBOX"
 
 
-class EtimsItemPayload(BaseModel):
+class EtimsItemPayload(ApiModel):
     itemSeq: int
     itemCd: str
     itemClsCd: str = "24101601"
@@ -29,7 +30,7 @@ class EtimsItemPayload(BaseModel):
     totAmt: float
 
 
-class EtimsSalesTransmissionRequest(BaseModel):
+class EtimsSalesTransmissionRequest(ApiModel):
     shop_id: uuid.UUID
     document_id: uuid.UUID
     customer_tin: Optional[str] = None
@@ -40,7 +41,7 @@ class EtimsSalesTransmissionRequest(BaseModel):
     items: List[EtimsItemPayload]
 
 
-class EtimsResponseEnvelope(BaseModel):
+class EtimsResponseEnvelope(ApiModel):
     success: bool
     status: str
     invoice_number: Optional[int] = None
@@ -50,7 +51,7 @@ class EtimsResponseEnvelope(BaseModel):
     error: Optional[str] = None
 
 
-class EtimsStatusResponse(BaseModel):
+class EtimsStatusResponse(ApiModel):
     is_active: bool
     global_enabled: bool
     kra_pin: Optional[str] = None

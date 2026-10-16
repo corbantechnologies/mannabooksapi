@@ -3,7 +3,7 @@ import secrets
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status, Request, Cookie
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc, func, delete
@@ -20,6 +20,7 @@ from app.models.crm import (
 )
 from app.modules.auth.service import verify_and_get_session
 from app.core.datetime_utils import utcnow
+from app.core.schemas import ApiModel
 
 settings = get_settings()
 
@@ -28,6 +29,11 @@ router = APIRouter(tags=["CRM, Proposals, Contracts & Projects"])
 
 async def _verify_auth(principal: Principal = Depends(get_principal)):
     return principal
+
+
+def _uid(auth) -> Optional[uuid.UUID]:
+    user = getattr(auth, "user", None)
+    return user.id if user else None
 
 
 async def _resolve_shop_id(db: AsyncSession, shop_id: Optional[str] = None, shop_slug: Optional[str] = None) -> Optional[uuid.UUID]:
@@ -45,18 +51,24 @@ async def _resolve_shop_id(db: AsyncSession, shop_id: Optional[str] = None, shop
 # -------------------------------------------------------------------------
 # Request Models
 # -------------------------------------------------------------------------
-class CreateDealRequest(BaseModel):
+class CreateDealRequest(ApiModel):
     shop_id: str
     client_id: Optional[str] = None
     title: str
-    value: Decimal = Decimal("0.00")
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    estimated_value: Decimal = Field(Decimal("0.00"), validation_alias=AliasChoices("estimated_value", "estimatedValue", "value"))
     currency: str = "KES"
     stage: str = "LEAD"
-    probability: int = 10
-    close_date: Optional[str] = None
+    win_probability: int = Field(10, validation_alias=AliasChoices("win_probability", "winProbability", "probability"))
+    expected_close_date: Optional[str] = Field(
+        None, validation_alias=AliasChoices("expected_close_date", "expectedCloseDate", "close_date")
+    )
+    notes: Optional[str] = None
 
 
-class UpdateDealRequest(BaseModel):
+class UpdateDealRequest(ApiModel):
     title: Optional[str] = None
     value: Optional[Decimal] = None
     stage: Optional[str] = None
@@ -65,7 +77,7 @@ class UpdateDealRequest(BaseModel):
     lost_reason: Optional[str] = None
 
 
-class CreateProposalItemRequest(BaseModel):
+class CreateProposalItemRequest(ApiModel):
     id: Optional[str] = None
     product_id: Optional[str] = None
     package_label: Optional[str] = None
@@ -79,7 +91,7 @@ class CreateProposalItemRequest(BaseModel):
     item_total: Optional[Decimal] = None
 
 
-class CreateProposalRequest(BaseModel):
+class CreateProposalRequest(ApiModel):
     shop_id: str
     deal_id: Optional[str] = None
     client_id: Optional[str] = None
@@ -87,13 +99,14 @@ class CreateProposalRequest(BaseModel):
     currency: str = "KES"
     items: List[CreateProposalItemRequest] = []
     valid_until: Optional[str] = None
+    validity_days: Optional[int] = Field(None, ge=1, le=365)
     notes: Optional[str] = None
     terms_and_conditions: Optional[str] = None
     executive_summary: Optional[str] = None
     scope_of_work: Optional[str] = None
 
 
-class UpdateProposalRequest(BaseModel):
+class UpdateProposalRequest(ApiModel):
     shop_id: Optional[str] = None
     deal_id: Optional[str] = None
     client_id: Optional[str] = None
@@ -108,7 +121,7 @@ class UpdateProposalRequest(BaseModel):
     items: Optional[List[CreateProposalItemRequest]] = None
 
 
-class CreateContractRequest(BaseModel):
+class CreateContractRequest(ApiModel):
     shop_id: str
     client_id: Optional[str] = None
     deal_id: Optional[str] = None
@@ -123,14 +136,14 @@ class CreateContractRequest(BaseModel):
     terms_and_conditions: Optional[str] = None
 
 
-class LogContractHoursRequest(BaseModel):
+class LogContractHoursRequest(ApiModel):
     billing_month: str  # YYYY-MM
     hours_used: Decimal
     description: Optional[str] = None
     log_date: Optional[str] = None
 
 
-class CreateProjectRequest(BaseModel):
+class CreateProjectRequest(ApiModel):
     shop_id: str
     client_id: Optional[str] = None
     contract_id: Optional[str] = None
@@ -186,18 +199,22 @@ async def create_deal(
     auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    user_id = auth.id if hasattr(auth, "id") else None
-    c_date = date.fromisoformat(req.close_date) if req.close_date else None
+    user_id = _uid(auth)
+    c_date = datetime.fromisoformat(req.expected_close_date[:10]) if req.expected_close_date else None
     deal = Deal(
         shop_id=uuid.UUID(req.shop_id),
         client_id=uuid.UUID(req.client_id) if req.client_id else None,
         assigned_user_id=user_id,
         title=req.title.strip(),
-        value=req.value,
+        contact_name=(req.contact_name or "").strip() or "Primary Contact",
+        contact_email=req.contact_email,
+        contact_phone=req.contact_phone,
+        estimated_value=req.estimated_value,
         currency=req.currency.upper(),
         stage=req.stage,
-        probability=req.probability,
-        close_date=c_date,
+        win_probability=max(0, min(100, req.win_probability)),
+        expected_close_date=c_date,
+        notes=req.notes,
     )
     db.add(deal)
     await db.commit()
@@ -222,12 +239,24 @@ async def update_deal(
         deal.stage = req["stage"]
     if "title" in req and req["title"]:
         deal.title = req["title"].strip()
-    if "value" in req:
-        deal.value = Decimal(str(req["value"]))
-    if "probability" in req:
-        deal.probability = int(req["probability"])
-    if "lost_reason" in req or "lostReason" in req:
-        deal.lost_reason = req.get("lost_reason") or req.get("lostReason")
+    for key in ("estimated_value", "estimatedValue", "value"):
+        if key in req and req[key] is not None:
+            deal.estimated_value = Decimal(str(req[key]))
+            break
+    for key in ("win_probability", "winProbability", "probability"):
+        if key in req and req[key] is not None:
+            deal.win_probability = max(0, min(100, int(req[key])))
+            break
+    for key in ("expected_close_date", "expectedCloseDate", "close_date"):
+        if req.get(key):
+            deal.expected_close_date = datetime.fromisoformat(str(req[key])[:10])
+            break
+    for key in ("contact_name", "contactName", "contact_email", "contactEmail", "contact_phone", "contactPhone", "notes"):
+        if key in req:
+            snake = {"contactName": "contact_name", "contactEmail": "contact_email", "contactPhone": "contact_phone"}.get(key, key)
+            setattr(deal, snake, req[key])
+    if "lost_reason" in req or "lostReason" in req or "loss_reason" in req:
+        deal.loss_reason = req.get("loss_reason") or req.get("lost_reason") or req.get("lostReason")
 
     await db.commit()
     await db.refresh(deal)
@@ -245,16 +274,18 @@ async def add_deal_activity(
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
 
-    user_id = auth.id if hasattr(auth, "id") else None
-    activity_type = req.get("type") or req.get("activity_type") or "NOTE"
-    desc = req.get("description") or req.get("notes") or ""
+    user_id = _uid(auth)
+    activity_type = (req.get("type") or req.get("activity_type") or req.get("activityType") or "NOTE").upper()
+    desc = req.get("body") or req.get("description") or req.get("notes") or ""
+    title = req.get("title") or activity_type.replace("_", " ").title()
 
     act = DealActivity(
         deal_id=deal_id,
         shop_id=deal.shop_id,
         user_id=user_id,
         activity_type=activity_type,
-        notes=desc,
+        title=title[:255],
+        body=desc,
     )
     db.add(act)
     await db.commit()
@@ -276,19 +307,19 @@ async def get_crm_forecast(
     q = select(Deal).where(and_(Deal.shop_id == sid, Deal.stage.notin_(["LOST"])))
     deals = (await db.execute(q)).scalars().all()
 
-    pipeline_total = sum(float(d.value) for d in deals)
-    weighted_total = sum(float(d.value) * (d.probability / 100.0) for d in deals)
+    pipeline_total = sum((d.estimated_value for d in deals), Decimal("0"))
+    weighted_total = sum((d.estimated_value * Decimal(d.win_probability) / Decimal(100) for d in deals), Decimal("0"))
 
-    stages = {}
+    stages: dict = {}
     for d in deals:
-        stages[d.stage] = stages.get(d.stage, 0.0) + float(d.value)
+        stages[d.stage] = stages.get(d.stage, Decimal("0")) + d.estimated_value
 
     return {
         "success": True,
-        "totalPipeline": pipeline_total,
-        "weightedForecast": round(weighted_total, 2),
+        "totalPipeline": float(pipeline_total),
+        "weightedForecast": float(round(weighted_total, 2)),
         "dealsCount": len(deals),
-        "stages": stages,
+        "stages": {k: float(v) for k, v in stages.items()},
     }
 
 
@@ -451,6 +482,9 @@ async def create_proposal(
 
     subtotal = sum((it.quantity * it.unit_price) - it.discount_amount for it in req.items) if req.items else Decimal("0.00")
     v_until = None
+    if not req.valid_until and req.validity_days:
+        from datetime import timedelta as _td
+        req.valid_until = (date.today() + _td(days=req.validity_days)).isoformat()
     if req.valid_until:
         try:
             v_until = date.fromisoformat(req.valid_until.split("T")[0])
@@ -899,7 +933,7 @@ async def log_contract_hours(
     if not c:
         raise HTTPException(status_code=404, detail="Contract not found")
 
-    user_id = auth.id if hasattr(auth, "id") else None
+    user_id = _uid(auth)
     l_date = date.fromisoformat(req.log_date) if req.log_date else date.today()
 
     entry = ContractHoursLog(
@@ -1111,7 +1145,7 @@ async def create_timesheet_entry(
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    user_id = auth.id if hasattr(auth, "id") else None
+    user_id = _uid(auth)
     hours = Decimal(str(req.get("hours_logged", req.get("hours", 1))))
     rate = Decimal(str(req.get("billable_rate", 0)))
     w_date = date.fromisoformat(req["work_date"]) if req.get("work_date") else date.today()

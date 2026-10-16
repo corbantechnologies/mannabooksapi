@@ -25,6 +25,7 @@ from app.modules.cashbook.service import (
     serialize,
     update_entry,
 )
+from app.core.schemas import ApiModel
 
 router = APIRouter(tags=["Expenses & Other Income"])
 
@@ -35,7 +36,7 @@ def _alias(*names: str):
     return Field(default=None, validation_alias=AliasChoices(*names))
 
 
-class EntryBase(BaseModel):
+class EntryBase(ApiModel):
     description: Optional[str] = Field(None, max_length=500)
     amount: Optional[Decimal] = None
     category: Optional[str] = None

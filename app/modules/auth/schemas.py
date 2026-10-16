@@ -1,6 +1,7 @@
 import uuid
 from typing import Optional
 from pydantic import BaseModel, EmailStr, Field, field_validator
+from app.core.schemas import ApiModel
 
 PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_BYTES = 72  # bcrypt only uses the first 72 bytes
@@ -16,12 +17,12 @@ def validate_password_strength(value: str) -> str:
     return value
 
 
-class LoginRequest(BaseModel):
+class LoginRequest(ApiModel):
     email: EmailStr
     password: str = Field(..., max_length=256)
 
 
-class RegisterOwnerRequest(BaseModel):
+class RegisterOwnerRequest(ApiModel):
     name: str = Field(..., min_length=1, max_length=120)
     email: EmailStr
     password: str
@@ -34,11 +35,11 @@ class RegisterOwnerRequest(BaseModel):
         return validate_password_strength(v)
 
 
-class ForgotPasswordRequest(BaseModel):
+class ForgotPasswordRequest(ApiModel):
     email: EmailStr
 
 
-class ResetPasswordRequest(BaseModel):
+class ResetPasswordRequest(ApiModel):
     token: str = Field(..., min_length=32, max_length=128)
     new_password: str
 
@@ -48,7 +49,7 @@ class ResetPasswordRequest(BaseModel):
         return validate_password_strength(v)
 
 
-class UserProfileResponse(BaseModel):
+class UserProfileResponse(ApiModel):
     id: uuid.UUID
     name: str
     email: str
@@ -57,7 +58,7 @@ class UserProfileResponse(BaseModel):
     subscription_status: str
 
 
-class SessionResponse(BaseModel):
+class SessionResponse(ApiModel):
     success: bool
     token: Optional[str] = None
     refresh_token: Optional[str] = None

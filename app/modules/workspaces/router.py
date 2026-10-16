@@ -11,6 +11,7 @@ from app.api.deps import get_current_user, verify_internal_api_key
 from app.models.identity import Shop, ShopMember, ShopInvitation, User
 from app.modules.auth.service import verify_and_get_session
 from app.core.datetime_utils import utcnow
+from app.core.schemas import ApiModel
 
 settings = get_settings()
 
@@ -512,12 +513,12 @@ from app.models.identity import User, ShopInvitation
 from app.modules.auth.service import generate_unique_shop_code
 
 
-class CreateWorkspaceRequest(BaseModel):
+class CreateWorkspaceRequest(ApiModel):
     business_name: str
     currency: str = "KES"
 
 
-class WorkspaceSettingsUpdate(BaseModel):
+class WorkspaceSettingsUpdate(ApiModel):
     name: Optional[str] = None
     short_name: Optional[str] = None
     currency: Optional[str] = None
@@ -538,7 +539,7 @@ class WorkspaceSettingsUpdate(BaseModel):
     loyalty_engine_mode: Optional[str] = None
 
 
-class InviteMemberRequest(BaseModel):
+class InviteMemberRequest(ApiModel):
     email: EmailStr
     role: str = "EMPLOYEE"
     custom_permissions: Dict[str, bool] = {}
@@ -547,7 +548,7 @@ class InviteMemberRequest(BaseModel):
     direct_approval_limit: Decimal = Decimal("0.00")
 
 
-class UpdateMemberRequest(BaseModel):
+class UpdateMemberRequest(ApiModel):
     role: Optional[str] = None
     custom_permissions: Optional[Dict[str, bool]] = None
     assigned_location_ids: Optional[List[str]] = None
@@ -922,7 +923,7 @@ async def remove_member_endpoint(
 # PAYMENT METHODS MANAGEMENT
 # ==============================================================================
 
-class PaymentMethodCreate(BaseModel):
+class PaymentMethodCreate(ApiModel):
     type: str = "BANK"
     name: str
     details: str
@@ -930,7 +931,7 @@ class PaymentMethodCreate(BaseModel):
     instructions: Optional[str] = None
 
 
-class PaymentMethodUpdate(BaseModel):
+class PaymentMethodUpdate(ApiModel):
     name: Optional[str] = None
     type: Optional[str] = None
     details: Optional[str] = None
@@ -1079,7 +1080,7 @@ async def set_default_payment_method_endpoint(
 # SHOP CURRENCIES MANAGEMENT
 # ==============================================================================
 
-class ShopCurrencyCreate(BaseModel):
+class ShopCurrencyCreate(ApiModel):
     code: str
     name: str
     symbol: str = "$"
@@ -1185,7 +1186,7 @@ async def delete_shop_currency(
 # SHOP TERMS MANAGEMENT
 # ==============================================================================
 
-class ShopTermCreate(BaseModel):
+class ShopTermCreate(ApiModel):
     title: str
     content: str
     display_order: int = 0
@@ -1196,7 +1197,7 @@ class ShopTermCreate(BaseModel):
     is_default_catalog: bool = False
 
 
-class ShopTermUpdate(BaseModel):
+class ShopTermUpdate(ApiModel):
     title: Optional[str] = None
     content: Optional[str] = None
     display_order: Optional[int] = None
@@ -1581,7 +1582,11 @@ async def clean_slate_workspace(
     shop_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    return {"success": True, "message": "Sandbox workspace reset to clean slate."}
+    # Not implemented: never report a reset that did not happen.
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Workspace reset is not available yet. Contact support to reset a sandbox workspace.",
+    )
 
 
 @router.get("/{shop_id}/export")

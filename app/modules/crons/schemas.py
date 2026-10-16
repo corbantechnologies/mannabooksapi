@@ -3,9 +3,10 @@ from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
+from app.core.schemas import ApiModel
 
 
-class OverdueSweepResponse(BaseModel):
+class OverdueSweepResponse(ApiModel):
     total_evaluated: int
     marked_overdue: int
     aging_buckets: Dict[str, int]  # "1-30_days", "31-60_days", "61-90_days", "90+_days"
@@ -13,7 +14,7 @@ class OverdueSweepResponse(BaseModel):
     errors: List[str] = []
 
 
-class RecurringScheduleProcessedItem(BaseModel):
+class RecurringScheduleProcessedItem(ApiModel):
     original_document_id: uuid.UUID
     new_document_id: uuid.UUID
     new_doc_number: str
@@ -21,7 +22,7 @@ class RecurringScheduleProcessedItem(BaseModel):
     next_recurring_date: Optional[datetime] = None
 
 
-class ProcessRecurringResponse(BaseModel):
+class ProcessRecurringResponse(ApiModel):
     total_evaluated: int
     created_invoices: int
     advanced_schedules: int
@@ -29,13 +30,13 @@ class ProcessRecurringResponse(BaseModel):
     errors: List[str] = []
 
 
-class QuoteExpiryResponse(BaseModel):
+class QuoteExpiryResponse(ApiModel):
     total_evaluated: int
     expired_quotes: int
     errors: List[str] = []
 
 
-class EtimsRetryCronResponse(BaseModel):
+class EtimsRetryCronResponse(ApiModel):
     batches_processed: int
     total_transmissions_evaluated: int
     succeeded: int

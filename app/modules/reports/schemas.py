@@ -3,18 +3,19 @@ from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict
+from app.core.schemas import ApiModel
 
 
 # ==========================================
 # 1. PROFIT & LOSS STATEMENT
 # ==========================================
-class PLLineItem(BaseModel):
+class PLLineItem(ApiModel):
     label: str
     amount: Decimal
     account_code: Optional[str] = None
 
 
-class PLStatementResponse(BaseModel):
+class PLStatementResponse(ApiModel):
     period: str
     currency: str
     start_date: datetime
@@ -38,7 +39,7 @@ class PLStatementResponse(BaseModel):
 # ==========================================
 # 2. BALANCE SHEET
 # ==========================================
-class BalanceSheetResponse(BaseModel):
+class BalanceSheetResponse(ApiModel):
     as_of_date: datetime
     currency: str
     # Current Assets
@@ -68,7 +69,7 @@ class BalanceSheetResponse(BaseModel):
 # ==========================================
 # 3. TRIAL BALANCE
 # ==========================================
-class TrialBalanceRow(BaseModel):
+class TrialBalanceRow(ApiModel):
     account_id: uuid.UUID
     code: str
     name: str
@@ -78,7 +79,7 @@ class TrialBalanceRow(BaseModel):
     balance: Decimal
 
 
-class TrialBalanceResponse(BaseModel):
+class TrialBalanceResponse(ApiModel):
     shop_id: uuid.UUID
     rows: List[TrialBalanceRow]
     total_debits: Decimal
@@ -89,7 +90,7 @@ class TrialBalanceResponse(BaseModel):
 # ==========================================
 # 4. KRA STATUTORY VAT RETURN SUMMARY
 # ==========================================
-class VatReturnInputTaxEntry(BaseModel):
+class VatReturnInputTaxEntry(ApiModel):
     supplier_name: str
     supplier_pin: Optional[str] = None
     invoice_number: str
@@ -98,7 +99,7 @@ class VatReturnInputTaxEntry(BaseModel):
     input_vat_claimed: Decimal
 
 
-class VatReturnSummaryResponse(BaseModel):
+class VatReturnSummaryResponse(ApiModel):
     shop_id: uuid.UUID
     shop_name: str
     tax_pin: Optional[str] = None
@@ -122,7 +123,7 @@ class VatReturnSummaryResponse(BaseModel):
 # ==========================================
 # 5. STOCK MOVEMENT & VALUATION LEDGER
 # ==========================================
-class StockLedgerEntryResponse(BaseModel):
+class StockLedgerEntryResponse(ApiModel):
     id: uuid.UUID
     product_id: uuid.UUID
     product_name: str
@@ -140,7 +141,7 @@ class StockLedgerEntryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class StockValuationRowResponse(BaseModel):
+class StockValuationRowResponse(ApiModel):
     product_id: uuid.UUID
     name: str
     sku: Optional[str] = None

@@ -3,9 +3,10 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Literal, Any
 from pydantic import BaseModel, Field, ConfigDict, field_validator
+from app.core.schemas import ApiModel
 
 
-class DocumentItemInput(BaseModel):
+class DocumentItemInput(ApiModel):
     product_id: Optional[uuid.UUID] = None
     description: str = Field(..., min_length=1)
     notes: Optional[str] = None
@@ -14,7 +15,7 @@ class DocumentItemInput(BaseModel):
     tax_type: Literal["V_16", "V_0", "EXEMPT"] = "V_16"
 
 
-class DocumentCreateRequest(BaseModel):
+class DocumentCreateRequest(ApiModel):
     client_id: Optional[uuid.UUID] = None
     supplier_id: Optional[uuid.UUID] = None
     type: str = "INVOICE"
@@ -86,7 +87,7 @@ class DocumentCreateRequest(BaseModel):
         return to_naive_utc(v)
 
 
-class CreditNoteItemInput(BaseModel):
+class CreditNoteItemInput(ApiModel):
     item_id: Optional[uuid.UUID] = None
     product_id: Optional[uuid.UUID] = None
     description: str
@@ -96,14 +97,14 @@ class CreditNoteItemInput(BaseModel):
     condition: Literal["RESALABLE", "DAMAGED", "BILLING_CORRECTION"] = "RESALABLE"
 
 
-class CreditNoteCreateRequest(BaseModel):
+class CreditNoteCreateRequest(ApiModel):
     reason_code: Literal["01", "02", "03"] = "01"  # 01 Goods Return, 02 Invoicing Error, 03 Price Adjustment
     reason_notes: str = Field(..., min_length=3)
     restock_inventory: bool = True  # Context-aware default
     items: Optional[List[CreditNoteItemInput]] = None  # None -> credits full parent invoice
 
 
-class DocumentStatusUpdateRequest(BaseModel):
+class DocumentStatusUpdateRequest(ApiModel):
     status: str
 
     @field_validator("status", mode="before")
@@ -121,7 +122,7 @@ class DocumentStatusUpdateRequest(BaseModel):
         return mapping.get(val, val)
 
 
-class DocumentPatchRequest(BaseModel):
+class DocumentPatchRequest(ApiModel):
     status: Optional[str] = None
     kra_cu_invoice_number: Optional[str] = None
     payment_channel: Optional[str] = None
@@ -137,20 +138,20 @@ class DocumentPatchRequest(BaseModel):
     next_recurring_date: Optional[datetime] = None
 
 
-class DocumentNoteCreateRequest(BaseModel):
+class DocumentNoteCreateRequest(ApiModel):
     note: str = Field(..., min_length=1)
 
 
-class DocumentConvertRequest(BaseModel):
+class DocumentConvertRequest(ApiModel):
     target_type: str
 
 
-class DocumentBulkStatusRequest(BaseModel):
+class DocumentBulkStatusRequest(ApiModel):
     document_ids: List[uuid.UUID]
     new_status: str
 
 
-class DocumentItemResponse(BaseModel):
+class DocumentItemResponse(ApiModel):
     id: uuid.UUID
     document_id: uuid.UUID
     product_id: Optional[uuid.UUID] = None
@@ -165,7 +166,7 @@ class DocumentItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class PartySummary(BaseModel):
+class PartySummary(ApiModel):
     id: uuid.UUID
     name: str
     email: Optional[str] = None
@@ -175,7 +176,7 @@ class PartySummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class DocumentResponse(BaseModel):
+class DocumentResponse(ApiModel):
     id: uuid.UUID
     shop_id: uuid.UUID
     client_id: Optional[uuid.UUID] = None

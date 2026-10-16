@@ -12,6 +12,7 @@ from app.api.deps import verify_internal_api_key, get_acting_user_id
 from app.modules.accounts.schemas import AccountCreateRequest, AccountResponse
 from app.modules.accounts.service import list_accounts, create_account
 from app.core.datetime_utils import utcnow
+from app.core.schemas import ApiModel
 
 router = APIRouter(prefix="/accounts", tags=["Chart of Accounts"], dependencies=[Depends(verify_internal_api_key)])
 
@@ -75,7 +76,7 @@ async def list_fiscal_years_endpoint(
     }
 
 
-class DeclareFiscalYearRequest(BaseModel):
+class DeclareFiscalYearRequest(ApiModel):
     shop_id: uuid.UUID
     label: str
     startDate: Optional[str] = None
@@ -84,7 +85,7 @@ class DeclareFiscalYearRequest(BaseModel):
     end_date: Optional[str] = None
 
 
-class CloseFiscalYearRequest(BaseModel):
+class CloseFiscalYearRequest(ApiModel):
     shop_id: uuid.UUID
 
 
@@ -114,7 +115,7 @@ async def delete_fiscal_year_endpoint(
 
 
 
-class CreateJournalEntryRequest(BaseModel):
+class CreateJournalEntryRequest(ApiModel):
     entry_date: Optional[datetime] = None
     description: str
     debit_account_id: uuid.UUID

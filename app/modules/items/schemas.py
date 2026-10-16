@@ -3,9 +3,10 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional, Literal
 from pydantic import BaseModel, Field, ConfigDict
+from app.core.schemas import ApiModel
 
 
-class ItemCreateRequest(BaseModel):
+class ItemCreateRequest(ApiModel):
     name: str = Field(..., min_length=1, max_length=255)
     sku: Optional[str] = None
     item_type: Literal["PRODUCT", "SERVICE"] = "PRODUCT"
@@ -22,7 +23,7 @@ class ItemCreateRequest(BaseModel):
     pkg_unit_cd: str = "PCE"
 
 
-class ItemUpdateRequest(BaseModel):
+class ItemUpdateRequest(ApiModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     sku: Optional[str] = None
     item_type: Optional[Literal["PRODUCT", "SERVICE"]] = None
@@ -36,7 +37,7 @@ class ItemUpdateRequest(BaseModel):
     pkg_unit_cd: Optional[str] = None
 
 
-class StockAdjustmentRequest(BaseModel):
+class StockAdjustmentRequest(ApiModel):
     product_id: uuid.UUID
     location_id: Optional[uuid.UUID] = None
     quantity: Decimal = Field(..., gt=0, description="Positive quantity adjustment")
@@ -46,7 +47,7 @@ class StockAdjustmentRequest(BaseModel):
     notes: Optional[str] = None
 
 
-class ItemResponse(BaseModel):
+class ItemResponse(ApiModel):
     id: uuid.UUID
     shop_id: uuid.UUID
     name: str
@@ -66,7 +67,7 @@ class ItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class StockLedgerResponse(BaseModel):
+class StockLedgerResponse(ApiModel):
     id: uuid.UUID
     shop_id: uuid.UUID
     product_id: uuid.UUID

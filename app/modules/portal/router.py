@@ -13,28 +13,40 @@ from app.models.crm import Proposal, ProposalToken
 from app.models.identity import Shop, User
 from app.api.deps import require_internal_service
 from app.core.datetime_utils import utcnow
+from app.core.schemas import ApiModel
 
 router = APIRouter(prefix="/portal", tags=["Public Customer & Partner Portal"])
 
 
-class ProposalDecisionPayload(BaseModel):
+class ProposalDecisionPayload(ApiModel):
     signer_name: Optional[str] = None
     signature_data: Optional[str] = None
-    notes: Optional[str] = None
+    notes: Optional[str] = Field(None, max_length=5000, validation_alias=AliasChoices("notes", "amendment_notes", "amendmentNotes"))
+    client_name: Optional[str] = Field(None, max_length=200)
+    contact_email: Optional[str] = Field(None, max_length=200)
 
 
-class QuotationDecisionPayload(BaseModel):
+class QuotationDecisionPayload(ApiModel):
     client_response: Optional[str] = None
-    amendment_notes: Optional[str] = None
+    amendment_notes: Optional[str] = Field(None, max_length=5000)
+    client_name: Optional[str] = Field(None, max_length=200)
+    contact_email: Optional[str] = Field(None, max_length=200)
 
 
-class CatalogQuoteItem(BaseModel):
+def _with_contact(notes: Optional[str], name: Optional[str], email: Optional[str]) -> Optional[str]:
+    who = " ".join(x for x in [(name or "").strip(), f"<{email.strip()}>" if email and email.strip() else ""] if x)
+    if not who:
+        return notes
+    return f"From {who}: {notes or ''}".strip()
+
+
+class CatalogQuoteItem(ApiModel):
     product_id: uuid.UUID = Field(..., validation_alias=AliasChoices("product_id", "productId"))
     quantity: Decimal = Field(..., gt=0, le=Decimal("100000"))
     notes: Optional[str] = Field(None, max_length=500)
 
 
-class CatalogQuoteRequest(BaseModel):
+class CatalogQuoteRequest(ApiModel):
     customer_name: str = Field(..., min_length=2, max_length=150, validation_alias=AliasChoices("customer_name", "customerName", "client_name"))
     customer_email: Optional[str] = Field(None, max_length=200, validation_alias=AliasChoices("customer_email", "customerEmail", "client_email"))
     customer_phone: Optional[str] = Field(None, max_length=20, validation_alias=AliasChoices("customer_phone", "customerPhone", "client_phone"))
@@ -89,7 +101,7 @@ async def portal_amend_proposal(
 
     prop.status = "AMENDMENT_REQUESTED"
     prop.responded_at = utcnow()
-    prop.amendment_notes = payload.notes
+    prop.amendment_notes = _with_contact(payload.notes, payload.client_name, payload.contact_email)
     await db.commit()
     return {"success": True, "message": "Amendment request recorded"}
 
@@ -223,7 +235,9 @@ async def portal_amend_quotation(
         )
 
     doc.client_portal_response = "AMENDMENT_REQUESTED"
-    doc.client_amendment_notes = payload.amendment_notes or payload.client_response
+    doc.client_amendment_notes = _with_contact(
+        payload.amendment_notes or payload.client_response, payload.client_name, payload.contact_email
+    )
     await db.commit()
     return {"success": True, "message": "Quotation amendment requested"}
 

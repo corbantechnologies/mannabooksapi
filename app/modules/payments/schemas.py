@@ -3,9 +3,10 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional, Literal, Any
 from pydantic import BaseModel, Field, ConfigDict, field_validator
+from app.core.schemas import ApiModel
 
 
-class RecordPaymentRequest(BaseModel):
+class RecordPaymentRequest(ApiModel):
     document_id: uuid.UUID
     amount: Decimal = Field(..., gt=0)
     payment_channel: Literal["MPESA", "BANK", "CASH", "CHEQUE", "OTHER"] = "BANK"
@@ -20,7 +21,7 @@ class RecordPaymentRequest(BaseModel):
         return to_naive_utc(v)
 
 
-class MpesaC2BCallbackRequest(BaseModel):
+class MpesaC2BCallbackRequest(ApiModel):
     TransactionType: str = "Pay Bill"
     TransID: str
     TransTime: str
@@ -33,7 +34,7 @@ class MpesaC2BCallbackRequest(BaseModel):
     LastName: Optional[str] = None
 
 
-class PaymentResponse(BaseModel):
+class PaymentResponse(ApiModel):
     id: uuid.UUID
     document_id: uuid.UUID
     shop_id: uuid.UUID
@@ -47,7 +48,7 @@ class PaymentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class PaymentReceiptSummary(BaseModel):
+class PaymentReceiptSummary(ApiModel):
     payment: PaymentResponse
     document_id: uuid.UUID
     doc_number: str

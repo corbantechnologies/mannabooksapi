@@ -13,6 +13,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from app.api.tenancy import workspace_guard
 from app.core.config import get_settings
 from app.core.logging import configure_logging, request_id_var
+from app.core.responses import CompatJSONResponse
 from app.db.session import engine
 from sqlalchemy import text
 from app.modules.etims.router import router as etims_router
@@ -66,6 +67,7 @@ app = FastAPI(
     title="MannaBooks Decoupled API & KRA eTIMS Engine",
     version="1.0.0",
     lifespan=lifespan,
+    default_response_class=CompatJSONResponse,
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
