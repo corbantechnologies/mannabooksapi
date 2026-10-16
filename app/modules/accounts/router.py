@@ -16,12 +16,26 @@ from app.core.datetime_utils import utcnow
 router = APIRouter(prefix="/accounts", tags=["Chart of Accounts"], dependencies=[Depends(verify_internal_api_key)])
 
 
+async def _seed_if_needed(db: AsyncSession, shop_id: uuid.UUID) -> None:
+    """GL workspaces must always have the standard chart (older activations never created it)."""
+    from app.models.identity import Shop
+    from app.modules.accounts.gl_service import ensure_default_accounts
+
+    shop = await db.get(Shop, shop_id)
+    if shop and shop.is_gl_enabled:
+        before = len(await list_accounts(db, shop_id=shop_id))
+        accounts = await ensure_default_accounts(db, shop_id)
+        if len(accounts) != before:
+            await db.commit()
+
+
 @router.get("", response_model=List[AccountResponse])
 async def list_accounts_endpoint(
     shop_id: uuid.UUID = Query(...),
     account_type: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
+    await _seed_if_needed(db, shop_id)
     return await list_accounts(db, shop_id=shop_id, account_type=account_type)
 
 
@@ -176,6 +190,7 @@ async def get_chart_of_accounts(
     shop_id: uuid.UUID = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
+    await _seed_if_needed(db, shop_id)
     accounts = await list_accounts(db, shop_id=shop_id)
     return {
         "success": True,
@@ -204,9 +219,12 @@ async def activate_gl_endpoint(
     shop = await db.get(Shop, sid)
     if not shop:
         raise HTTPException(status_code=404, detail="Shop not found")
+    from app.modules.accounts.gl_service import ensure_default_accounts
+
     shop.is_gl_enabled = True
+    accounts = await ensure_default_accounts(db, sid)
     await db.commit()
-    return {"success": True, "message": "General Ledger activated successfully"}
+    return {"success": True, "message": "General Ledger activated successfully", "accountsCount": len(accounts)}
 
 
 @router.post("/disable-onboarding")
