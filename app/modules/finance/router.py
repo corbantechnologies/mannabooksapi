@@ -31,6 +31,7 @@ from app.modules.finance.tax_service import (
     generate_tax_instalments,
     pay_tax_instalment,
 )
+from app.core.datetime_utils import utcnow
 
 router = APIRouter(prefix="/finance", tags=["Finance & Tax"], dependencies=[Depends(verify_internal_api_key)])
 tax_router = APIRouter(prefix="/tax", tags=["Statutory Tax Engine"], dependencies=[Depends(verify_internal_api_key)])
@@ -300,7 +301,7 @@ async def pay_tax_instalment_endpoint(
 ):
     p_amount = req.paidAmount if req.paidAmount is not None else (req.paid_amount or Decimal("0.00"))
     p_ref = req.paymentReference or req.payment_reference or "MANUAL-TAX-PAYMENT"
-    p_at = to_naive_utc(req.paidAt or req.paid_at) or datetime.utcnow()
+    p_at = to_naive_utc(req.paidAt or req.paid_at) or utcnow()
 
     inst = await pay_tax_instalment(
         db=db,

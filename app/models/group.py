@@ -6,6 +6,7 @@ from sqlalchemy import String, Boolean, DateTime, ForeignKey, Numeric, Text, Uni
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
+from app.core.datetime_utils import utcnow
 
 
 class GroupEntity(Base):
@@ -17,7 +18,7 @@ class GroupEntity(Base):
     reporting_currency: Mapped[str] = mapped_column("reporting_currency", String(3), default="KES", nullable=False)
     owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=utcnow, nullable=False)
 
     memberships = relationship("GroupMembership", back_populates="group", cascade="all, delete-orphan", lazy="selectin")
     transactions = relationship("InterCompanyTransaction", back_populates="group", cascade="all, delete-orphan", lazy="selectin")
@@ -32,7 +33,7 @@ class GroupMembership(Base):
     shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
     entity_type: Mapped[str] = mapped_column("entity_type", String(30), default="SUBSIDIARY", nullable=False)
     ownership_percentage: Mapped[Decimal] = mapped_column("ownership_percentage", Numeric(5, 2), default=Decimal("100.00"), nullable=False)
-    joined_at: Mapped[datetime] = mapped_column("joined_at", DateTime, default=datetime.utcnow, nullable=False)
+    joined_at: Mapped[datetime] = mapped_column("joined_at", DateTime, default=utcnow, nullable=False)
 
     group = relationship("GroupEntity", back_populates="memberships")
     shop = relationship("Shop", lazy="selectin")
@@ -52,7 +53,7 @@ class InterCompanyTransaction(Base):
     transaction_type: Mapped[str] = mapped_column("transaction_type", String(50), default="MANAGEMENT_SERVICES", nullable=False)
     is_eliminated: Mapped[bool] = mapped_column("is_eliminated", Boolean, default=True, nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=utcnow, nullable=False)
 
     group = relationship("GroupEntity", back_populates="transactions")
     source_shop = relationship("Shop", foreign_keys=[source_shop_id], lazy="selectin")

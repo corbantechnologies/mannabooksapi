@@ -9,6 +9,7 @@ from app.models.operations import FixedAsset, TaxInstalment
 from app.models.document import Document
 from app.models.expense import Expense
 from app.models.identity import Shop
+from app.core.datetime_utils import utcnow
 
 # Kenya Statutory Capital Allowance Rates
 CAPITAL_ALLOWANCE_RATES = {
@@ -327,7 +328,7 @@ async def pay_tax_instalment(
 
     inst.paid_amount = paid_amount
     inst.payment_reference = payment_reference
-    inst.paid_at = paid_at or datetime.utcnow()
+    inst.paid_at = paid_at or utcnow()
     inst.status = "PAID"
 
     await db.commit()

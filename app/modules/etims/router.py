@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 from app.db.session import get_db
-from app.api.deps import verify_internal_api_key
+from app.api.deps import verify_internal_api_key, verify_cron_or_internal_key
 from app.core.config import get_settings
 from app.models.etims import EtimsConfig, EtimsTransmission
 from app.modules.etims.schemas import (
@@ -75,7 +75,7 @@ async def get_shop_etims_status(
     )
 
 
-@router.post("/worker/process-queue", dependencies=[Depends(verify_internal_api_key)])
+@router.post("/worker/process-queue", dependencies=[Depends(verify_cron_or_internal_key)])
 async def trigger_worker_queue_processing(
     db: AsyncSession = Depends(get_db),
 ):

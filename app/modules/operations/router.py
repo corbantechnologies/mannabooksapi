@@ -1,3 +1,4 @@
+import logging
 import uuid
 import secrets
 from datetime import datetime
@@ -22,27 +23,21 @@ from app.models.expense import Expense, Income
 from app.modules.auth.service import verify_and_get_session
 
 from app.core.config import get_settings
-from app.api.deps import verify_internal_api_key
+from app.api.deps import get_current_user, verify_internal_api_key, get_principal, Principal
 from app.core.datetime_utils import to_naive_utc
+from app.core.datetime_utils import utcnow
 
 settings = get_settings()
+
+
+logger = logging.getLogger("mannabooks.operations")
 
 router = APIRouter(tags=["Operations, Manufacturing, Budgets & Loyalty"])
 inventory_router = APIRouter(prefix="/inventory", tags=["Inventory Management"], dependencies=[Depends(verify_internal_api_key)])
 
 
-async def _verify_auth(
-    request: Request,
-    authorization: Optional[str] = Header(None),
-    x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
-    db: AsyncSession = Depends(get_db),
-):
-    return await verify_internal_api_key(
-        request=request,
-        x_internal_key=x_internal_key,
-        authorization=authorization,
-        db=db,
-    )
+async def _verify_auth(principal: Principal = Depends(get_principal)):
+    return principal
 
 
 async def _resolve_shop_id(db: AsyncSession, shop_id: Optional[str] = None, shop_slug: Optional[str] = None) -> Optional[uuid.UUID]:
@@ -156,7 +151,7 @@ async def create_budget(
     auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    now = datetime.utcnow()
+    now = utcnow()
     m_val = req.month if req.month is not None else now.month
     y_val = req.year if req.year is not None else now.year
     limit_val = req.monthly_limit if req.monthly_limit is not None else (req.budget_amount or Decimal("0.00"))
@@ -431,7 +426,7 @@ async def run_bom_production(
             )
             db.add(fin_entry)
 
-    order_num = f"PRD-{datetime.utcnow().strftime('%y%m%d')}-{secrets.randbelow(9000)+1000}"
+    order_num = f"PRD-{utcnow().strftime('%y%m%d')}-{secrets.randbelow(9000)+1000}"
     po = ProductionOrder(
         shop_id=shop_id,
         bom_id=bom_id,
@@ -440,7 +435,7 @@ async def run_bom_production(
         units_to_produce=units,
         total_cost_kes=total_cost,
         status="COMPLETED",
-        completed_at=datetime.utcnow(),
+        completed_at=utcnow(),
         notes=notes,
     )
     db.add(po)
@@ -490,7 +485,7 @@ async def create_stocktake(
     shop_obj = await db.get(Shop, shop_id)
     user_id = shop_obj.owner_id if shop_obj else ((await db.execute(select(User.id).limit(1))).scalar_one_or_none() or uuid.uuid4())
 
-    num = f"STK-{datetime.utcnow().strftime('%y%m%d')}-{secrets.randbelow(9000)+1000}"
+    num = f"STK-{utcnow().strftime('%y%m%d')}-{secrets.randbelow(9000)+1000}"
     stk = Stocktake(
         shop_id=shop_id,
         location_id=loc_id,
@@ -586,7 +581,7 @@ async def reconcile_stocktake(
             db.add(entry)
 
     stk.status = "COMPLETED"
-    stk.completed_at = datetime.utcnow()
+    stk.completed_at = utcnow()
     await db.commit()
     await db.refresh(stk)
     return {"success": True, "stocktake": stk, "message": "Stocktake reconciled and ledger adjusted."}
@@ -596,11 +591,10 @@ async def reconcile_stocktake(
 @router.get("/operations/production-orders")
 async def list_production_orders(
     shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -613,15 +607,14 @@ async def list_production_orders(
 @router.post("/operations/production-orders")
 async def create_production_order(
     req: CreateProductionOrderRequest,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    now = datetime.utcnow()
+    now = utcnow()
     order_number = f"PRD-{now.strftime('%y%m')}-{secrets.randbelow(9000) + 1000}"
 
     po = ProductionOrder(
@@ -646,13 +639,9 @@ async def create_production_order(
 @router.get("/operations/loyalty/program")
 async def get_loyalty_program(
     shop_id: str = Query(..., description="Workspace ID"),
-    authorization: Optional[str] = Header(None, description="Bearer <session_token>"),
-    x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
+    auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    auth_ok = await _verify_auth(authorization, x_internal_key, db)
-    if not auth_ok:
-        raise HTTPException(status_code=401, detail="Unauthorized")
 
     sid = uuid.UUID(shop_id) if isinstance(shop_id, str) and len(shop_id) == 36 else shop_id
     program = None
@@ -663,14 +652,14 @@ async def get_loyalty_program(
         res_prog = await db.execute(q_prog)
         program = res_prog.scalar_one_or_none()
     except Exception as e:
-        print(f"[Loyalty Query Warning] {e}")
+        logger.warning("Loyalty Query Warning: %s", e)
 
     try:
         q_tiers = select(MembershipTier).where(MembershipTier.shop_id == sid).order_by(MembershipTier.display_order)
         res_tiers = await db.execute(q_tiers)
         tiers = res_tiers.scalars().all()
     except Exception as e:
-        print(f"[Membership Tier Query Warning] {e}")
+        logger.warning("Membership Tier Query Warning: %s", e)
 
     return {"success": True, "program": program, "tiers": tiers}
 
@@ -678,11 +667,10 @@ async def get_loyalty_program(
 @router.post("/operations/loyalty/program")
 async def update_loyalty_program(
     req: LoyaltyProgramUpdateRequest,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -767,11 +755,10 @@ async def delete_loyalty_tier(tier_id: uuid.UUID, db: AsyncSession = Depends(get
 @router.post("/operations/loyalty/adjust")
 async def adjust_loyalty_points(
     req: AdjustLoyaltyPointsRequest,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -1000,7 +987,7 @@ async def create_expense_endpoint(req: CreateExpenseRequest, db: AsyncSession = 
         amount=req.amount,
         category=req.category,
         currency=req.currency,
-        expense_date=to_naive_utc(req.expense_date) or datetime.utcnow(),
+        expense_date=to_naive_utc(req.expense_date) or utcnow(),
         payment_channel=req.payment_channel,
         payment_reference=req.payment_reference,
         receipt_url=req.receipt_url,
@@ -1075,7 +1062,7 @@ async def create_income_endpoint(req: CreateIncomeRequest, db: AsyncSession = De
         amount=req.amount,
         category=req.category,
         currency=req.currency,
-        income_date=to_naive_utc(req.income_date) or datetime.utcnow(),
+        income_date=to_naive_utc(req.income_date) or utcnow(),
         payment_channel=req.payment_channel,
         payment_reference=req.payment_reference,
         attachment_url=req.attachment_url,
@@ -1336,7 +1323,7 @@ async def get_inventory_transfer_by_id(
             "destinationLocation": {"id": "", "name": "Branch Store"},
             "items": [],
             "notes": "Stock transfer record",
-            "createdAt": datetime.utcnow().isoformat(),
+            "createdAt": utcnow().isoformat(),
         }
         return {"success": True, "transfer": transfer_dict}
 

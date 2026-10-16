@@ -5,6 +5,7 @@ from sqlalchemy import String, Boolean, DateTime, Date, ForeignKey, Text, Unique
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
+from app.core.datetime_utils import utcnow
 
 
 class ChartOfAccount(Base):
@@ -21,7 +22,7 @@ class ChartOfAccount(Base):
     )
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     parent_code: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("shop_id", "code", name="unique_shop_account_code"),
@@ -46,7 +47,7 @@ class FiscalYear(Base):
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
     is_closed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_current: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 period_status_enum = SQLEnum('OPEN', 'CLOSED', name="period_status", create_type=False)
@@ -64,4 +65,4 @@ class AccountingPeriod(Base):
     status: Mapped[str] = mapped_column(period_status_enum, default="OPEN", nullable=False)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     closed_by_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

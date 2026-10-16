@@ -18,7 +18,7 @@ async def test_docs_basic_auth_protection():
 
         # 2. Authenticated request with valid basic credentials should succeed (200)
         # Using default credentials from config
-        res_auth = await ac.get("/docs", auth=("admin", "mannabooks2026"))
+        res_auth = await ac.get("/docs", auth=("admin", "test-docs-password"))
         assert res_auth.status_code == 200
         assert "swagger-ui" in res_auth.text.lower() or "html" in res_auth.text.lower()
 

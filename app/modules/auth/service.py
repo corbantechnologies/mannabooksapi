@@ -28,7 +28,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 async def create_session(db: AsyncSession, user_id) -> Tuple[str, datetime]:
     """Legacy session (still used by some internal paths). Prefer JWT."""
     token = secrets.token_hex(32)
-    expires_at = datetime.utcnow() + timedelta(days=settings.COOKIE_DURATION_DAYS)
+    expires_at = utcnow() + timedelta(days=settings.COOKIE_DURATION_DAYS)
 
     session_record = Session(
         id=token,
@@ -41,36 +41,12 @@ async def create_session(db: AsyncSession, user_id) -> Tuple[str, datetime]:
 
 
 async def verify_and_get_session(db: AsyncSession, token: str) -> Optional[User]:
-    """Verify session token: Checks JWT first, then falls back to legacy DB session."""
+    """Resolve a user from a JWT (with revocation checks) or a legacy DB session token."""
     if not token:
         return None
-
-    # 1. Try JWT validation
-    user_id = verify_access_token(token)
-    if user_id:
-        res = await db.execute(select(User).where(User.id == user_id))
-        user = res.scalar_one_or_none()
-        if user:
-            return user
-
-    # 2. Fallback to legacy stateful DB session
-    q = (
-        select(Session)
-        .where(Session.id == token)
-        .options(selectinload(Session.user))
-    )
-    res = await db.execute(q)
-    record = res.scalar_one_or_none()
-
-    if not record or not record.user:
-        return None
-
-    if datetime.utcnow() >= record.expires_at:
-        await db.execute(delete(Session).where(Session.id == token))
-        await db.commit()
-        return None
-
-    return record.user
+    from app.api.deps import resolve_user_from_token
+    user, _ = await resolve_user_from_token(db, token)
+    return user
 
 
 async def invalidate_session(db: AsyncSession, token: str) -> None:
@@ -93,6 +69,7 @@ import re
 import string
 import random
 from app.modules.auth.schemas import RegisterOwnerRequest, SessionResponse, UserProfileResponse
+from app.core.datetime_utils import utcnow
 
 
 async def generate_unique_shop_code(db: AsyncSession) -> str:

@@ -17,6 +17,7 @@ from app.models.supplier import Supplier
 from app.models.account import ChartOfAccount
 from app.models.identity import Shop
 from app.core.datetime_utils import to_naive_utc
+from app.core.datetime_utils import utcnow
 
 router = APIRouter(prefix="/bills", tags=["Vendor Bills & 3-Way Matching"], dependencies=[Depends(verify_internal_api_key)])
 
@@ -241,7 +242,7 @@ async def create_bill(
     if not supp or supp.shop_id != shop_id:
         raise HTTPException(status_code=400, detail="Supplier not found in workspace")
 
-    bill_num = f"BILL-{datetime.utcnow().strftime('%y%m')}-{secrets.token_hex(3).upper()}"
+    bill_num = f"BILL-{utcnow().strftime('%y%m')}-{secrets.token_hex(3).upper()}"
 
     sub_total = Decimal("0.00")
     tax_total = Decimal("0.00")
@@ -306,7 +307,7 @@ async def create_bill(
         supplier_id=req.supplier_id,
         bill_number=bill_num,
         reference=req.reference,
-        bill_date=req.get_bill_date() or datetime.utcnow(),
+        bill_date=req.get_bill_date() or utcnow(),
         due_date=req.get_due_date(),
         sub_total=sub_total,
         tax_amount=tax_total,
@@ -350,7 +351,7 @@ async def pay_bill(
     bill.amount_paid = new_paid
     bill.payment_channel = req.payment_channel
     bill.payment_reference = req.payment_reference
-    bill.paid_at = to_naive_utc(req.payment_date) or datetime.utcnow()
+    bill.paid_at = to_naive_utc(req.payment_date) or utcnow()
 
     if new_paid >= bill.net_payable:
         bill.status = "PAID"

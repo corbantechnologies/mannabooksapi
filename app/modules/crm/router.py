@@ -10,7 +10,7 @@ from sqlalchemy import select, and_, desc, func, delete
 
 from app.db.session import get_db
 from app.core.config import get_settings
-from app.api.deps import verify_internal_api_key
+from app.api.deps import verify_internal_api_key, get_principal, Principal
 from app.models.identity import User, Shop
 from app.models.client import Client
 from app.models.document import Document, DocumentItem
@@ -19,26 +19,15 @@ from app.models.crm import (
     Contract, ContractHoursLog, Project, ProjectMember, Timesheet, ProjectMilestone
 )
 from app.modules.auth.service import verify_and_get_session
+from app.core.datetime_utils import utcnow
 
 settings = get_settings()
 
 router = APIRouter(tags=["CRM, Proposals, Contracts & Projects"])
 
 
-async def _verify_auth(
-    request: Request,
-    x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
-    authorization: Optional[str] = Header(None),
-    access_token: Optional[str] = Cookie(None, alias="access_token"),
-    db: AsyncSession = Depends(get_db),
-):
-    return await verify_internal_api_key(
-        request=request,
-        x_internal_key=x_internal_key,
-        authorization=authorization,
-        access_token=access_token,
-        db=db,
-    )
+async def _verify_auth(principal: Principal = Depends(get_principal)):
+    return principal
 
 
 async def _resolve_shop_id(db: AsyncSession, shop_id: Optional[str] = None, shop_slug: Optional[str] = None) -> Optional[uuid.UUID]:
@@ -457,7 +446,7 @@ async def create_proposal(
     auth: Any = Depends(_verify_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    now = datetime.utcnow()
+    now = utcnow()
     proposal_number = f"PROP-{now.strftime('%y%m')}-{secrets.randbelow(9000) + 1000}"
 
     subtotal = sum((it.quantity * it.unit_price) - it.discount_amount for it in req.items) if req.items else Decimal("0.00")
@@ -574,7 +563,7 @@ async def update_proposal(
             db.add(p_item)
         prop.subtotal = subtotal
 
-    prop.updated_at = datetime.utcnow()
+    prop.updated_at = utcnow()
     await db.commit()
     await db.refresh(prop)
 
@@ -617,7 +606,7 @@ async def send_proposal(
     if not prop:
         raise HTTPException(status_code=404, detail="Proposal not found")
     prop.status = "SENT"
-    prop.sent_at = datetime.utcnow()
+    prop.sent_at = utcnow()
     await db.commit()
     return {"success": True, "message": "Proposal marked as sent"}
 
@@ -635,7 +624,7 @@ async def convert_proposal_to_invoice(
     items_q = select(ProposalItem).where(ProposalItem.proposal_id == proposal_id)
     items = (await db.execute(items_q)).scalars().all()
 
-    now = datetime.utcnow()
+    now = utcnow()
     doc_number = f"INV-{now.strftime('%y%m')}-{secrets.randbelow(9000)+1000}"
 
     doc = Document(
@@ -684,7 +673,7 @@ async def record_public_proposal_view(
     prop = await db.get(Proposal, pt.proposal_id)
     if prop:
         prop.view_count = (prop.view_count or 0) + 1
-        prop.viewed_at = datetime.utcnow()
+        prop.viewed_at = utcnow()
         if prop.status == "SENT":
             prop.status = "VIEWED"
         await db.commit()
@@ -772,7 +761,7 @@ async def accept_public_proposal(
         raise HTTPException(status_code=404, detail="Proposal not found")
 
     prop.status = "ACCEPTED"
-    prop.responded_at = datetime.utcnow()
+    prop.responded_at = utcnow()
     if payload:
         if payload.get("signer_name") or payload.get("signerName"):
             prop.signer_name = payload.get("signer_name") or payload.get("signerName")
@@ -814,7 +803,7 @@ async def create_contract(
 
     cid = uuid.UUID(req["client_id"]) if req.get("client_id") else None
     deal_id = uuid.UUID(req["deal_id"]) if req.get("deal_id") else None
-    now = datetime.utcnow()
+    now = utcnow()
     c_num = req.get("contract_number") or f"CTR-{now.strftime('%y%m')}-{secrets.randbelow(9000)+1000}"
 
     s_date = datetime.strptime(req["start_date"][:10], "%Y-%m-%d").date() if req.get("start_date") else now.date()
@@ -963,7 +952,7 @@ async def create_project(
     cid = uuid.UUID(req["client_id"]) if req.get("client_id") else None
     deal_id = uuid.UUID(req["deal_id"]) if req.get("deal_id") else None
     contract_id = uuid.UUID(req["contract_id"]) if req.get("contract_id") else None
-    now = datetime.utcnow()
+    now = utcnow()
     p_code = req.get("project_code") or req.get("code") or f"PRJ-{now.strftime('%y%m')}-{secrets.randbelow(9000)+1000}"
 
     s_date = datetime.strptime(req["start_date"][:10], "%Y-%m-%d").date() if req.get("start_date") else now.date()
@@ -1057,7 +1046,7 @@ async def update_milestone_status(
     
     m.status = req.get("status", "COMPLETED")
     if m.status == "COMPLETED":
-        m.completed_at = datetime.utcnow()
+        m.completed_at = utcnow()
     await db.commit()
     await db.refresh(m)
     return {"success": True, "milestone": m}
@@ -1075,7 +1064,7 @@ async def convert_milestone_to_invoice(
     if not m or not proj:
         raise HTTPException(status_code=404, detail="Milestone or Project not found")
 
-    now = datetime.utcnow()
+    now = utcnow()
     doc_num = f"INV-MLS-{now.strftime('%y%m')}-{secrets.randbelow(9000)+1000}"
 
     doc = Document(
@@ -1201,7 +1190,7 @@ async def invoice_approved_timesheets(
     if not timesheets:
         return {"success": False, "message": "No approved, unbilled timesheets found."}
 
-    now = datetime.utcnow()
+    now = utcnow()
     total_amount = sum(t.billable_amount for t in timesheets)
     doc_num = f"INV-TS-{now.strftime('%y%m')}-{secrets.randbelow(9000)+1000}"
 

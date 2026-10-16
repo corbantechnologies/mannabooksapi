@@ -5,6 +5,7 @@ from sqlalchemy import String, Boolean, DateTime, ForeignKey, Text, Enum as SQLE
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
+from app.core.datetime_utils import utcnow
 
 
 class Supplier(Base):
@@ -24,4 +25,4 @@ class Supplier(Base):
     tax_pin: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     requires_etims: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     payment_terms: Mapped[Optional[str]] = mapped_column(String(50), default="NET_30", nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

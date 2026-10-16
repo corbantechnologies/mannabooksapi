@@ -1,12 +1,12 @@
 import uuid
 import secrets
 from typing import List, Optional, Any, Dict
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select, and_, or_, desc, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
-from app.api.deps import verify_internal_api_key
+from app.api.deps import verify_internal_api_key, require_internal_service
 from app.models.payment import PaymentMethod, serialize_payment_method
 from app.modules.documents.schemas import (
     DocumentCreateRequest,
@@ -35,6 +35,7 @@ from app.modules.documents.service import (
     generate_recurring_cycle,
 )
 from datetime import datetime, date, timezone, timedelta
+from app.core.datetime_utils import utcnow
 
 router = APIRouter(prefix="/documents", tags=["Documents & Credit Notes"], dependencies=[Depends(verify_internal_api_key)])
 
@@ -146,18 +147,14 @@ async def convert_document_endpoint(
 async def add_document_note_endpoint(
     document_id: uuid.UUID,
     req: DocumentNoteCreateRequest,
+    request: Request,
     shop_id: uuid.UUID = Query(...),
-    user_id: Optional[uuid.UUID] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.api.deps import get_acting_user_id
+    user_id = get_acting_user_id(request)
     if not user_id:
-        # Fallback to shop owner if no user_id passed
-        from app.models.identity import Shop
-        from sqlalchemy import select
-        q = select(Shop.owner_id).where(Shop.id == shop_id)
-        user_id = (await db.execute(q)).scalar_one_or_none()
-        if not user_id:
-            raise HTTPException(status_code=400, detail="User ID required for note")
+        raise HTTPException(status_code=401, detail="A signed-in user is required to add notes")
 
     note = await add_document_note(db, shop_id=shop_id, document_id=document_id, user_id=user_id, note=req.note)
     return {"success": True, "note_id": str(note.id)}
@@ -213,9 +210,36 @@ async def delete_document_endpoint(
     return {"success": True}
 
 
+async def _caller_is_member(request: Request, db: AsyncSession, shop_id: uuid.UUID) -> bool:
+    from app.api.deps import get_principal
+    from app.models.identity import Shop, ShopMember
+
+    try:
+        principal = await get_principal(request, db)
+    except HTTPException:
+        return False
+    user = principal.user
+    if not user:
+        return False
+    if user.is_super_admin:
+        return True
+    member = (
+        await db.execute(
+            select(ShopMember).where(
+                ShopMember.shop_id == shop_id, ShopMember.user_id == user.id, ShopMember.is_active == True  # noqa: E712
+            )
+        )
+    ).scalars().first()
+    if member:
+        return True
+    owner_id = (await db.execute(select(Shop.owner_id).where(Shop.id == shop_id))).scalar_one_or_none()
+    return owner_id == user.id
+
+
 @router.get("/public/{token}")
 async def get_public_document_endpoint(
     token: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     from app.models.document import Document, DocumentToken
@@ -229,14 +253,16 @@ async def get_public_document_endpoint(
         target_doc_id = tok_res.document_id
 
     if not target_doc_id:
+        # Raw document ids are NOT public: only signed-in members of the owning workspace may use them
+        # (e.g. printing a payroll voucher). Customers always get the unguessable token link.
         try:
             parsed_uuid = uuid.UUID(token)
-            q_doc = select(Document).where(Document.id == parsed_uuid)
-            doc_direct = (await db.execute(q_doc)).scalar_one_or_none()
-            if doc_direct:
-                target_doc_id = doc_direct.id
         except (ValueError, TypeError):
-            pass
+            parsed_uuid = None
+        if parsed_uuid:
+            doc_direct = (await db.execute(select(Document).where(Document.id == parsed_uuid))).scalar_one_or_none()
+            if doc_direct and await _caller_is_member(request, db, doc_direct.shop_id):
+                target_doc_id = doc_direct.id
 
     if not target_doc_id:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -380,7 +406,7 @@ async def generate_recurring_cycle_endpoint(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
-@router.post("/webhooks/resend")
+@router.post("/webhooks/resend", dependencies=[Depends(require_internal_service)])
 async def resend_email_webhook(
     payload: Dict[str, Any],
     db: AsyncSession = Depends(get_db),
@@ -405,7 +431,7 @@ async def resend_email_webhook(
             doc.email_delivery_status = "DELIVERED"
     elif type_ in ("email.opened", "email.clicked"):
         doc.email_delivery_status = "OPENED"
-        doc.last_email_opened_at = datetime.utcnow()
+        doc.last_email_opened_at = utcnow()
     elif type_ == "email.bounced":
         doc.email_delivery_status = "BOUNCED"
 
@@ -449,7 +475,7 @@ async def duplicate_document_endpoint(
         sub_total=source.sub_total,
         tax_amount=source.tax_amount,
         grand_total=source.grand_total,
-        issue_date=datetime.utcnow(),
+        issue_date=utcnow(),
     )
     db.add(new_doc)
     await db.flush()

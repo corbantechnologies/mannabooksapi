@@ -29,12 +29,13 @@ from app.modules.reports.schemas import (
 
 
 from app.core.datetime_utils import to_naive_utc
+from app.core.datetime_utils import utcnow
 
 
 def _compute_period_range(period: str, start_date: Optional[datetime], end_date: Optional[datetime]) -> tuple[datetime, datetime]:
     start_date = to_naive_utc(start_date)
     end_date = to_naive_utc(end_date)
-    now = datetime.utcnow()
+    now = utcnow()
     if start_date and end_date:
         return start_date, end_date
 
@@ -198,7 +199,7 @@ async def get_balance_sheet(
     shop_id: uuid.UUID,
     as_of_date: Optional[datetime] = None,
 ) -> BalanceSheetResponse:
-    as_of = to_naive_utc(as_of_date) or datetime.utcnow()
+    as_of = to_naive_utc(as_of_date) or utcnow()
 
     # Fetch shop
     q_shop = select(Shop).where(Shop.id == shop_id)

@@ -16,6 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
+from app.core.datetime_utils import utcnow
 
 
 class Document(Base):
@@ -91,7 +92,7 @@ class Document(Base):
     tax_amount: Mapped[Decimal] = mapped_column("tax_amount", Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     grand_total: Mapped[Decimal] = mapped_column("grand_total", Numeric(12, 2), nullable=False)
 
-    issue_date: Mapped[datetime] = mapped_column("issue_date", DateTime, default=datetime.utcnow, nullable=False)
+    issue_date: Mapped[datetime] = mapped_column("issue_date", DateTime, default=utcnow, nullable=False)
     due_date: Mapped[Optional[datetime]] = mapped_column("due_date", DateTime, nullable=True)
 
     # Recurring Invoicing
@@ -104,7 +105,7 @@ class Document(Base):
     next_recurring_date: Mapped[Optional[datetime]] = mapped_column("next_recurring_date", DateTime, nullable=True)
 
     location_id: Mapped[Optional[uuid.UUID]] = mapped_column("location_id", UUID(as_uuid=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=utcnow, nullable=False)
 
     # Relationships
     items: Mapped[List["DocumentItem"]] = relationship("DocumentItem", back_populates="document", cascade="all, delete-orphan", lazy="selectin")
@@ -163,7 +164,7 @@ class DocumentToken(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
     token: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class DocumentNote(Base):
@@ -174,7 +175,7 @@ class DocumentNote(Base):
     shop_id: Mapped[uuid.UUID] = mapped_column("shop_id", UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id: Mapped[uuid.UUID] = mapped_column("user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     note: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
     document = relationship("Document", back_populates="notes_list")
     user = relationship("User", lazy="selectin")

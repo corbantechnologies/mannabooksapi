@@ -1,3 +1,4 @@
+import logging
 import uuid
 from decimal import Decimal
 from typing import List, Optional, Dict, Any
@@ -13,6 +14,9 @@ from app.modules.payments.schemas import (
 )
 from datetime import datetime
 from app.core.datetime_utils import to_naive_utc
+from app.core.datetime_utils import utcnow
+
+logger = logging.getLogger("mannabooks.payments")
 
 
 async def record_payment(
@@ -37,12 +41,26 @@ async def record_payment(
     if doc.status == "CANCELLED":
         raise ValueError("Cannot record payment against a cancelled document")
 
+    # Guard against overpayment: customer credit balances are not supported yet.
+    already_paid: Decimal = (
+        await db.execute(
+            select(func.coalesce(func.sum(DocumentPayment.amount), Decimal("0.00"))).where(
+                DocumentPayment.document_id == doc.id
+            )
+        )
+    ).scalar() or Decimal("0.00")
+    outstanding = Decimal(str(doc.grand_total)) - already_paid
+    if outstanding <= 0:
+        raise ValueError("This document is already fully paid")
+    if req.amount > outstanding:
+        raise ValueError(f"Payment of {req.amount:,.2f} exceeds the outstanding balance of {outstanding:,.2f}")
+
     # 2. Record installment payment
     payment = DocumentPayment(
         document_id=doc.id,
         shop_id=shop_id,
         amount=req.amount,
-        payment_date=to_naive_utc(req.payment_date) or datetime.utcnow(),
+        payment_date=to_naive_utc(req.payment_date) or utcnow(),
         payment_channel=req.payment_channel,
         payment_reference=req.payment_reference.strip() if req.payment_reference else None,
         notes=req.notes,
@@ -111,17 +129,45 @@ async def handle_mpesa_c2b_callback(
     if existing:
         return {"ResultCode": 0, "ResultDesc": "Accepted Duplicate"}
 
-    # 2. Match BillRefNumber against Document doc_number
+    # 2. Resolve the receiving workspace from the paybill/till number, then match the
+    #    BillRefNumber against that workspace's documents only. Document numbers are only
+    #    unique per workspace, so a global match could credit the wrong tenant.
+    from app.models.payment import PaymentMethod
+
+    shortcode = (req.BusinessShortCode or "").strip()
     bill_ref = req.BillRefNumber.strip()
-    q_doc = select(Document).where(Document.doc_number.ilike(bill_ref)).with_for_update()
-    res_doc = await db.execute(q_doc)
-    doc = res_doc.scalar_one_or_none()
+    if not shortcode or not bill_ref:
+        return {"ResultCode": 0, "ResultDesc": "Accepted (Missing reference)"}
 
-    if not doc:
-        # Acknowledge Safaricom to prevent callback retries even if reference is unmatched
+    shop_ids = (
+        await db.execute(
+            select(PaymentMethod.shop_id).where(PaymentMethod.details.ilike(f"%{shortcode}%")).distinct()
+        )
+    ).scalars().all()
+    if not shop_ids:
+        logger.warning("C2B %s: no workspace configured for shortcode %s", trans_id, shortcode)
+        return {"ResultCode": 0, "ResultDesc": "Accepted (Unknown shortcode)"}
+
+    docs = (
+        await db.execute(
+            select(Document)
+            .where(Document.shop_id.in_(shop_ids), func.lower(Document.doc_number) == bill_ref.lower())
+            .with_for_update()
+        )
+    ).scalars().all()
+
+    if len(docs) != 1:
+        # Unmatched or ambiguous: acknowledge so Safaricom stops retrying; reconcile manually.
+        logger.warning("C2B %s: %d documents match BillRef %s for shortcode %s", trans_id, len(docs), bill_ref, shortcode)
         return {"ResultCode": 0, "ResultDesc": "Accepted (Unmatched BillRef)"}
+    doc = docs[0]
 
-    amount = Decimal(req.TransAmount)
+    try:
+        amount = Decimal(req.TransAmount)
+    except Exception:
+        return {"ResultCode": 0, "ResultDesc": "Accepted (Invalid amount)"}
+    if amount <= 0:
+        return {"ResultCode": 0, "ResultDesc": "Accepted (Invalid amount)"}
     payer_name = f"{req.FirstName or ''} {req.LastName or ''}".strip()
     notes = f"M-Pesa C2B from {req.MSISDN} ({payer_name})"
 
@@ -129,7 +175,7 @@ async def handle_mpesa_c2b_callback(
         document_id=doc.id,
         shop_id=doc.shop_id,
         amount=amount,
-        payment_date=datetime.utcnow(),
+        payment_date=utcnow(),
         payment_channel="MPESA",
         payment_reference=trans_id,
         notes=notes,
@@ -189,7 +235,7 @@ async def delete_payment(
             doc.status = "PAID"
         elif total_paid > Decimal("0.00"):
             doc.status = "PARTIALLY_PAID"
-        elif doc.due_date and doc.due_date < datetime.utcnow():
+        elif doc.due_date and doc.due_date < utcnow():
             doc.status = "OVERDUE"
         else:
             doc.status = "ISSUED"

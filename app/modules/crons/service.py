@@ -17,6 +17,7 @@ from app.modules.crons.schemas import (
     EtimsRetryCronResponse,
 )
 from app.core.datetime_utils import to_naive_utc
+from app.core.datetime_utils import utcnow
 
 
 # ================================================================
@@ -25,7 +26,7 @@ from app.core.datetime_utils import to_naive_utc
 async def run_overdue_sweep(
     db: AsyncSession, shop_id: Optional[uuid.UUID] = None
 ) -> OverdueSweepResponse:
-    now = datetime.utcnow()
+    now = utcnow()
     conditions = [
         Document.type == "INVOICE",
         Document.status.in_(["ISSUED", "PARTIALLY_PAID"]),
@@ -83,7 +84,7 @@ async def run_overdue_sweep(
 async def run_process_recurring(
     db: AsyncSession, shop_id: Optional[uuid.UUID] = None
 ) -> ProcessRecurringResponse:
-    now = datetime.utcnow()
+    now = utcnow()
     conditions = [
         Document.is_recurring == True,
         Document.next_recurring_date.isnot(None),
@@ -193,7 +194,7 @@ async def run_process_recurring(
 async def run_quote_expiry_sweep(
     db: AsyncSession, shop_id: Optional[uuid.UUID] = None
 ) -> QuoteExpiryResponse:
-    now = datetime.utcnow()
+    now = utcnow()
     conditions = [
         Document.type == "QUOTATION",
         Document.status == "ISSUED",

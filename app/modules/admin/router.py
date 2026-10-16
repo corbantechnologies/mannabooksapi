@@ -7,11 +7,11 @@ from sqlalchemy import select, func, desc, or_, and_, delete
 from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
-from app.api.deps import verify_internal_api_key
+from app.api.deps import require_super_admin
 from app.models.identity import User, Shop, ShopMember, Session
 from app.models.document import Document
 
-router = APIRouter(prefix="/admin", tags=["Global Admin"], dependencies=[Depends(verify_internal_api_key)])
+router = APIRouter(prefix="/admin", tags=["Global Admin"], dependencies=[Depends(require_super_admin)])
 
 
 class UpdateWorkspacePlanRequest(BaseModel):
@@ -37,38 +37,6 @@ class ToggleUserLifetimeRequest(BaseModel):
 
 class ToggleSuperAdminRequest(BaseModel):
     is_super_admin: bool
-
-
-class BootstrapAdminRequest(BaseModel):
-    email: str
-
-
-@router.post("/bootstrap")
-async def bootstrap_admin_endpoint(
-    req: BootstrapAdminRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    email = req.email.strip().lower()
-    q = select(User).where(func.lower(User.email) == email)
-    res = await db.execute(q)
-    user = res.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail=f"User '{email}' was not found in the database. Please sign up on MannaBooks first, then call this endpoint.",
-        )
-    user.is_super_admin = True
-    await db.commit()
-    return {
-        "success": True,
-        "message": f"Successfully elevated {user.name} ({user.email}) to Super Admin.",
-        "user": {
-            "id": str(user.id),
-            "email": user.email,
-            "name": user.name,
-            "isSuperAdmin": True,
-        },
-    }
 
 
 @router.get("/stats")

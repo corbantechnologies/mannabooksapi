@@ -10,81 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc
 
 from app.db.session import get_db
+from app.api.deps import get_current_user
 from app.models.identity import User, Shop, ShopMember
 from app.models.hr import Employee, ExpenseClaim
 from app.models.expense import Expense
 from app.models.document import Document, DocumentItem
 from app.models.journal import JournalEntry
 from app.modules.auth.service import verify_and_get_session
+from app.core.datetime_utils import utcnow
 
 router = APIRouter(tags=["HR, Payroll & ESS"])
-
-
-# -------------------------------------------------------------------------
-# Kenyan Statutory Payroll Math
-# -------------------------------------------------------------------------
-def compute_kenyan_deductions(base_salary: float, allowances: float, commissions: float, custom_deductions: float = 0.0, mode: str = "KENYA_STATUTORY"):
-    base = round(base_salary, 2)
-    allow = round(allowances, 2)
-    comms = round(commissions, 2)
-    custom_ded = round(custom_deductions, 2)
-    gross_salary = round(base + allow + comms, 2)
-
-    if mode == "MANUAL_CUSTOM":
-        total_ded = custom_ded
-        net_pay = max(0.0, round(gross_salary - total_ded, 2))
-        return {
-            "gross_salary": gross_salary,
-            "nssf": 0.0,
-            "shif": 0.0,
-            "housing_levy": 0.0,
-            "paye": 0.0,
-            "custom_deductions": custom_ded,
-            "total_deductions": total_ded,
-            "net_pay": net_pay,
-        }
-
-    # 1. NSSF: 6% capped at KES 2,160 max
-    nssf = round(gross_salary * 0.06, 2)
-    if nssf > 2160.0:
-        nssf = 2160.0
-
-    # 2. SHIF: 2.75% of Gross
-    shif = round(gross_salary * 0.0275, 2)
-
-    # 3. Affordable Housing Levy (AHL): 1.5% of Gross
-    housing_levy = round(gross_salary * 0.015, 2)
-
-    # 4. PAYE calculation (NSSF is tax-exempt)
-    taxable_income = max(0.0, gross_salary - nssf)
-    gross_paye = 0.0
-    if taxable_income > 0.0:
-        b1 = min(taxable_income, 24000.0)
-        gross_paye += b1 * 0.10
-        if taxable_income > 24000.0:
-            b2 = min(taxable_income - 24000.0, 8333.0)
-            gross_paye += b2 * 0.25
-        if taxable_income > 32333.0:
-            b3 = taxable_income - 32333.0
-            gross_paye += b3 * 0.30
-
-    # Monthly Personal Relief: KES 2,400
-    personal_relief = 2400.0
-    paye = round(gross_paye - personal_relief, 2) if gross_paye > personal_relief else 0.0
-
-    total_ded = round(nssf + shif + housing_levy + paye + custom_ded, 2)
-    net_pay = max(0.0, round(gross_salary - total_ded, 2))
-
-    return {
-        "gross_salary": gross_salary,
-        "nssf": nssf,
-        "shif": shif,
-        "housing_levy": housing_levy,
-        "paye": paye,
-        "custom_deductions": custom_ded,
-        "total_deductions": total_ded,
-        "net_pay": net_pay,
-    }
 
 
 # -------------------------------------------------------------------------
@@ -132,24 +67,6 @@ class LinkUserRequest(BaseModel):
     user_id: str
 
 
-class PayrollLineItem(BaseModel):
-    employee_id: Optional[str] = None
-    employee_name: str
-    base_salary: float
-    allowances: float = 0.0
-    commissions: float = 0.0
-    custom_deductions: float = 0.0
-
-
-class CommitPayrollRequest(BaseModel):
-    shop_id: str
-    payroll_period_code: str  # e.g. "OCTOBER-2026"
-    mode: str = "KENYA_STATUTORY"
-    status: str = "DRAFT"  # DRAFT or PAID
-    issue_date: Optional[datetime] = None
-    lines: List[PayrollLineItem]
-
-
 class CreateExpenseClaimRequest(BaseModel):
     shop_id: str
     employee_id: str
@@ -180,11 +97,10 @@ class DisburseExpenseClaimRequest(BaseModel):
 @router.get("/employees")
 async def list_employees(
     shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -197,11 +113,10 @@ async def list_employees(
 @router.post("/employees")
 async def create_employee(
     req: CreateEmployeeRequest,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -250,11 +165,10 @@ async def create_employee(
 async def get_employee(
     employee_id: str,
     shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -292,11 +206,10 @@ async def update_employee(
     employee_id: str,
     req: UpdateEmployeeRequest,
     shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -347,11 +260,10 @@ async def update_employee(
 async def delete_employee(
     employee_id: str,
     shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -369,11 +281,10 @@ async def link_employee_user(
     employee_id: str,
     req: LinkUserRequest,
     shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -397,11 +308,10 @@ async def link_employee_user(
 async def unlink_employee_user(
     employee_id: str,
     shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -417,11 +327,10 @@ async def unlink_employee_user(
 @router.get("/employees/linkable-users/{shop_id}")
 async def get_linkable_users(
     shop_id: str,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -450,207 +359,16 @@ async def get_linkable_users(
 
 
 # -------------------------------------------------------------------------
-# STATUTORY PAYROLL RUN COMMITMENT
-# -------------------------------------------------------------------------
-@router.post("/payroll/calculate")
-async def calculate_payroll(
-    lines: List[PayrollLineItem],
-    mode: str = Query("KENYA_STATUTORY"),
-):
-    calculations = []
-    for l in lines:
-        calcs = compute_kenyan_deductions(l.base_salary, l.allowances, l.commissions, l.custom_deductions, mode=mode)
-        calculations.append({
-            "employeeName": l.employee_name,
-            "employeeId": l.employee_id,
-            **calcs,
-        })
-    return {"success": True, "calculations": calculations}
-
-
-@router.post("/payroll/commit")
-async def commit_payroll_run(
-    req: CommitPayrollRequest,
-    authorization: str = Header(..., description="Bearer <session_token>"),
-    db: AsyncSession = Depends(get_db),
-):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    issue_date = req.issue_date or datetime.utcnow()
-    doc_number = f"PAY-{issue_date.strftime('%Y%m')}-{secrets.token_hex(2).upper()}"
-
-    global_subtotal = Decimal("0.00")
-    global_grandtotal = Decimal("0.00")
-    line_entries = []
-
-    for line in req.lines:
-        calcs = compute_kenyan_deductions(line.base_salary, line.allowances, line.commissions, line.custom_deductions, mode=req.mode)
-        gross = Decimal(str(calcs["gross_salary"]))
-        net = Decimal(str(calcs["net_pay"]))
-        desc = (
-            f"[Payroll Run: {req.payroll_period_code}] Staff: {line.employee_name} | "
-            f"Base: {line.base_salary:.2f} | Allow: {line.allowances:.2f} | Comm: {line.commissions:.2f} | "
-            f"Deductions: {calcs['total_deductions']:.2f} (PAYE: {calcs['paye']:.2f}, SHIF: {calcs['shif']:.2f}, "
-            f"AHL: {calcs['housing_levy']:.2f}, NSSF: {calcs['nssf']:.2f}, Adv: {calcs['custom_deductions']:.2f}) | "
-            f"Net: {calcs['net_pay']:.2f}"
-        )
-        line_entries.append({
-            "desc": desc,
-            "net": net,
-            "gross": gross,
-            "employee_id": line.employee_id,
-        })
-        global_subtotal += gross
-        global_grandtotal += net
-
-    # Create Document (type: PAYROLL_VOUCHER)
-    doc = Document(
-        shop_id=uuid.UUID(req.shop_id),
-        type="PAYROLL_VOUCHER",
-        doc_number=doc_number,
-        status="PAID" if req.status == "PAID" else "DRAFT",
-        issue_date=issue_date,
-        currency="KES",
-        sub_total=global_subtotal,
-        tax_amount=Decimal("0.00"),
-        grand_total=global_grandtotal,
-        notes=f"Statutory Payroll Run for {req.payroll_period_code}",
-    )
-    db.add(doc)
-    await db.flush()
-
-    for item in line_entries:
-        doc_item = DocumentItem(
-            document_id=doc.id,
-            description=item["desc"],
-            quantity=Decimal("1.00"),
-            unit_price=item["net"],
-            tax_type="EXEMPT",
-            tax_amount=Decimal("0.00"),
-            item_total=item["net"],
-        )
-        db.add(doc_item)
-
-    await db.commit()
-    return {"success": True, "voucherId": str(doc.id), "docNumber": doc.doc_number}
-
-
-@router.post("/payroll/generate")
-async def generate_payroll_run(
-    req: dict,
-    db: AsyncSession = Depends(get_db),
-):
-    shop_id = uuid.UUID(req["shop_id"]) if isinstance(req.get("shop_id"), str) else req.get("shop_id")
-    period = req.get("payroll_period_code") or req.get("period") or datetime.utcnow().strftime("%Y-%m")
-    mode = req.get("mode", "KENYA_STATUTORY")
-
-    # Fetch active employees for this shop
-    q = select(Employee).where(Employee.shop_id == shop_id, Employee.is_active == True)
-    res = await db.execute(q)
-    employees = res.scalars().all()
-
-    issue_date = datetime.utcnow()
-    doc_number = f"PAY-{issue_date.strftime('%Y%m')}-{secrets.token_hex(2).upper()}"
-    global_subtotal = Decimal("0.00")
-    global_grandtotal = Decimal("0.00")
-    line_entries = []
-
-    for emp in employees:
-        base_salary = float(emp.base_salary)
-        calcs = compute_kenyan_deductions(base_salary, 0.0, 0.0, 0.0, mode=mode)
-        gross = Decimal(str(calcs["gross_salary"]))
-        net = Decimal(str(calcs["net_pay"]))
-        desc = (
-            f"[Payroll Run: {period}] Staff: {emp.full_name} | "
-            f"Base: {base_salary:.2f} | Net: {calcs['net_pay']:.2f}"
-        )
-        line_entries.append({
-            "desc": desc,
-            "net": net,
-            "gross": gross,
-            "employee_id": emp.id,
-        })
-        global_subtotal += gross
-        global_grandtotal += net
-
-    doc = Document(
-        shop_id=shop_id,
-        type="PAYROLL_VOUCHER",
-        doc_number=doc_number,
-        status="DRAFT",
-        issue_date=issue_date,
-        currency="KES",
-        sub_total=global_subtotal,
-        tax_amount=Decimal("0.00"),
-        grand_total=global_grandtotal,
-        notes=f"Statutory Payroll Run for {period}",
-    )
-    db.add(doc)
-    await db.flush()
-
-    for item in line_entries:
-        doc_item = DocumentItem(
-            document_id=doc.id,
-            description=item["desc"],
-            quantity=Decimal("1.00"),
-            unit_price=item["net"],
-            tax_type="EXEMPT",
-            tax_amount=Decimal("0.00"),
-            item_total=item["net"],
-        )
-        db.add(doc_item)
-
-    await db.commit()
-    await db.refresh(doc)
-    return {
-        "success": True,
-        "voucherId": str(doc.id),
-        "docNumber": doc.doc_number,
-        "employeesCount": len(employees),
-        "grandTotal": float(global_grandtotal),
-    }
-
-
-@router.post("/payroll/{doc_id}/finalize")
-async def finalize_payroll_run_endpoint(
-    doc_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    doc = await db.get(Document, doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Payroll voucher not found")
-    doc.status = "PAID"
-    await db.commit()
-    return {"success": True, "voucherId": str(doc.id), "status": "PAID"}
-
-
-@router.post("/payroll/{doc_id}/email")
-async def email_payslips_endpoint(
-    doc_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    doc = await db.get(Document, doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Payroll voucher not found")
-    return {"success": True, "voucherId": str(doc.id), "message": "Payslips dispatched via email to all staff."}
-
-
-
-# -------------------------------------------------------------------------
 # EXPENSE CLAIMS ENDPOINTS
 # -------------------------------------------------------------------------
 @router.get("/expense-claims")
 async def list_expense_claims(
     shop_id: str = Query(..., description="Workspace ID"),
     filter_status: Optional[str] = Query(None),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -689,15 +407,14 @@ async def list_expense_claims(
 @router.post("/expense-claims")
 async def create_expense_claim(
     req: CreateExpenseClaimRequest,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    now = datetime.utcnow()
+    now = utcnow()
     claim_number = f"CLM-{now.strftime('%y%m')}-{secrets.randbelow(9000) + 1000}"
 
     c_date = date.fromisoformat(req.claim_date) if req.claim_date else date.today()
@@ -724,11 +441,10 @@ async def create_expense_claim(
 async def submit_claim(
     claim_id: str,
     shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -746,11 +462,10 @@ async def review_claim(
     claim_id: str,
     req: ReviewExpenseClaimRequest,
     shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -762,7 +477,7 @@ async def review_claim(
 
     c.status = req.decision
     c.approved_by_id = user.id
-    c.approved_at = datetime.utcnow()
+    c.approved_at = utcnow()
     c.approval_notes = req.notes.strip() if req.notes else None
     await db.commit()
     return {"success": True}
@@ -773,11 +488,10 @@ async def disburse_claim(
     claim_id: str,
     req: DisburseExpenseClaimRequest,
     shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -791,7 +505,7 @@ async def disburse_claim(
     if c.status != "APPROVED":
         return {"success": False, "error": "Only approved claims can be disbursed."}
 
-    p_date = to_naive_utc(req.payment_date) or datetime.utcnow()
+    p_date = to_naive_utc(req.payment_date) or utcnow()
 
     # Create official Expense
     exp = Expense(
@@ -810,7 +524,7 @@ async def disburse_claim(
 
     c.status = "DISBURSED"
     c.disbursed_expense_id = exp.id
-    c.disbursed_at = datetime.utcnow()
+    c.disbursed_at = utcnow()
     await db.commit()
 
     return {"success": True, "expenseId": str(exp.id)}
@@ -822,11 +536,10 @@ async def disburse_claim(
 @router.get("/ess/profile")
 async def get_ess_profile(
     shop_id: str = Query(..., description="Workspace ID"),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 

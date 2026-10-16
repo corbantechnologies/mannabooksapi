@@ -29,3 +29,13 @@ def to_naive_utc(dt: Any) -> Optional[datetime]:
     if isinstance(dt, date):
         return datetime(dt.year, dt.month, dt.day)
     return None
+
+
+def utcnow() -> datetime:
+    """
+    Current UTC time as a naive datetime.
+
+    Database columns are TIMESTAMP WITHOUT TIME ZONE and store UTC by convention, so this is the
+    single replacement for the deprecated datetime.utcnow().
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)

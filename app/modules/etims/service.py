@@ -8,6 +8,7 @@ from app.modules.etims.crypto import encrypt_cmc_key, decrypt_cmc_key
 from app.modules.etims.client import KraEtimsClient
 from app.modules.etims.schemas import EtimsInitRequest, EtimsSalesTransmissionRequest, EtimsResponseEnvelope
 from app.core.clock import now_nairobi
+from app.core.datetime_utils import utcnow
 
 
 async def register_etims_device(
@@ -53,7 +54,7 @@ async def register_etims_device(
             mrc_no=mrc_no,
             environment=req.environment,
             is_active=True,
-            last_sync_at=datetime.utcnow(),
+            last_sync_at=utcnow(),
         )
         db.add(config)
     else:
@@ -65,7 +66,7 @@ async def register_etims_device(
         config.mrc_no = mrc_no
         config.environment = req.environment
         config.is_active = True
-        config.last_sync_at = datetime.utcnow()
+        config.last_sync_at = utcnow()
 
     await db.commit()
 

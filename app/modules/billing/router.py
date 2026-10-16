@@ -8,8 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.db.session import get_db
-from app.api.deps import verify_internal_api_key
+import logging
+from app.api.deps import verify_internal_api_key, require_internal_service
+
+logger = logging.getLogger("mannabooks.billing")
 from app.models.identity import BillingTransaction, Shop, User
+from app.core.datetime_utils import utcnow
 
 router = APIRouter(prefix="/billing", tags=["Subscription Billing & M-Pesa"])
 
@@ -29,6 +33,15 @@ class UpdateBillingStatusRequest(BaseModel):
     result_code: Optional[int] = None
     result_desc: Optional[str] = None
     mpesa_receipt_number: Optional[str] = None
+
+
+def _activate_subscription(shop: Shop, tx: BillingTransaction) -> None:
+    now = utcnow()
+    # Extend from the current expiry if the plan is still running, otherwise from now.
+    base = shop.subscription_expires_at if shop.subscription_expires_at and shop.subscription_expires_at > now else now
+    shop.plan = tx.target_plan
+    shop.subscription_status = "ACTIVE"
+    shop.subscription_expires_at = base + timedelta(days=30 * tx.billing_months)
 
 
 @router.post("/initiate", status_code=status.HTTP_201_CREATED, dependencies=[Depends(verify_internal_api_key)])
@@ -75,15 +88,23 @@ async def get_billing_status(
     }
 
 
-@router.post("/update-status/{transaction_id}", dependencies=[Depends(verify_internal_api_key)])
+@router.post("/update-status/{transaction_id}", dependencies=[Depends(require_internal_service)])
 async def update_billing_status(
     transaction_id: uuid.UUID,
     req: UpdateBillingStatusRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    tx = await db.get(BillingTransaction, transaction_id)
+    tx = (
+        await db.execute(select(BillingTransaction).where(BillingTransaction.id == transaction_id).with_for_update())
+    ).scalar_one_or_none()
     if not tx:
         raise HTTPException(status_code=404, detail="Billing transaction not found")
+    if tx.status != "PENDING":
+        return {"success": True, "status": tx.status, "message": "Already processed"}
+    if req.status not in ("COMPLETED", "FAILED", "CANCELLED"):
+        raise HTTPException(status_code=400, detail="Invalid status")
+    if req.status == "COMPLETED" and not req.mpesa_receipt_number:
+        raise HTTPException(status_code=400, detail="A confirmed M-Pesa receipt is required to complete a payment")
 
     tx.status = req.status
     if req.result_code is not None:
@@ -93,71 +114,77 @@ async def update_billing_status(
     if req.mpesa_receipt_number is not None:
         tx.mpesa_receipt_number = req.mpesa_receipt_number
     if req.status == "COMPLETED":
-        tx.completed_at = datetime.utcnow()
-
-        # Activate shop plan
+        tx.completed_at = utcnow()
         shop = await db.get(Shop, tx.shop_id)
         if shop:
-            shop.plan = tx.target_plan
-            shop.subscription_status = "ACTIVE"
-            now = datetime.utcnow()
-            days = 30 * tx.billing_months
-            shop.subscription_expires_at = now + timedelta(days=days)
+            _activate_subscription(shop, tx)
 
     await db.commit()
     return {"success": True}
 
 
-@router.post("/mpesa-callback")
+@router.post("/mpesa-callback", dependencies=[Depends(require_internal_service)])
 async def mpesa_stk_callback(
     payload: Dict[str, Any],
     db: AsyncSession = Depends(get_db),
 ):
-    """Handle Daraja STK Push callback idempotently."""
-    try:
-        body = payload.get("Body", {}).get("stkCallback", {})
-        checkout_id = body.get("CheckoutRequestID")
-        result_code = body.get("ResultCode", -1)
-        result_desc = body.get("ResultDesc", "")
+    """
+    Daraja STK Push callback, forwarded by the Next.js server after it verified the callback secret.
+    Idempotent: only a PENDING transaction can change state, and the paid amount must match.
+    """
+    body = payload.get("Body", {}).get("stkCallback", {}) if isinstance(payload, dict) else {}
+    checkout_id = body.get("CheckoutRequestID")
+    result_code = body.get("ResultCode", -1)
+    result_desc = str(body.get("ResultDesc", ""))[:500]
 
-        if not checkout_id:
-            return {"ResultCode": 0, "ResultDesc": "Ignored, missing checkout ID"}
+    if not checkout_id:
+        return {"ResultCode": 0, "ResultDesc": "Ignored"}
 
-        q = select(BillingTransaction).where(BillingTransaction.checkout_request_id == checkout_id)
-        res = await db.execute(q)
-        tx = res.scalar_one_or_none()
+    tx = (
+        await db.execute(
+            select(BillingTransaction)
+            .where(BillingTransaction.checkout_request_id == checkout_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
 
-        if not tx:
-            return {"ResultCode": 0, "ResultDesc": "Transaction not found"}
-
-        if result_code == 0:
-            receipt = None
-            items = body.get("CallbackMetadata", {}).get("Item", [])
-            for it in items:
-                if it.get("Name") == "MpesaReceiptNumber":
-                    receipt = str(it.get("Value"))
-                    break
-
-            tx.status = "COMPLETED"
-            tx.result_code = 0
-            tx.result_desc = result_desc
-            tx.mpesa_receipt_number = receipt or f"MP{int(datetime.utcnow().timestamp())}"
-            tx.completed_at = datetime.utcnow()
-
-            # Activate shop subscription
-            shop = await db.get(Shop, tx.shop_id)
-            if shop:
-                shop.plan = tx.target_plan
-                shop.subscription_status = "ACTIVE"
-                days = 30 * tx.billing_months
-                shop.subscription_expires_at = datetime.utcnow() + timedelta(days=days)
-
-        else:
-            tx.status = "FAILED"
-            tx.result_code = result_code
-            tx.result_desc = result_desc
-
-        await db.commit()
+    if not tx:
+        logger.warning("STK callback for unknown CheckoutRequestID %s", checkout_id)
         return {"ResultCode": 0, "ResultDesc": "Accepted"}
-    except Exception as e:
-        return {"ResultCode": 1, "ResultDesc": f"Error: {str(e)}"}
+
+    if tx.status != "PENDING":
+        # Replayed or duplicate callback – never re-apply.
+        return {"ResultCode": 0, "ResultDesc": "Already processed"}
+
+    if result_code == 0:
+        meta = {it.get("Name"): it.get("Value") for it in body.get("CallbackMetadata", {}).get("Item", []) if isinstance(it, dict)}
+        receipt = meta.get("MpesaReceiptNumber")
+        try:
+            paid = Decimal(str(meta.get("Amount")))
+        except Exception:
+            paid = Decimal("0")
+
+        if not receipt or paid < Decimal(str(tx.amount)):
+            tx.status = "FAILED"
+            tx.result_code = -2
+            tx.result_desc = f"Amount/receipt verification failed (paid={paid}, expected={tx.amount})"
+            logger.error("STK callback verification failed for tx %s: paid=%s expected=%s", tx.id, paid, tx.amount)
+            await db.commit()
+            return {"ResultCode": 0, "ResultDesc": "Accepted"}
+
+        tx.status = "COMPLETED"
+        tx.result_code = 0
+        tx.result_desc = result_desc
+        tx.mpesa_receipt_number = str(receipt)
+        tx.completed_at = utcnow()
+
+        shop = await db.get(Shop, tx.shop_id)
+        if shop:
+            _activate_subscription(shop, tx)
+    else:
+        tx.status = "FAILED"
+        tx.result_code = int(result_code) if str(result_code).lstrip("-").isdigit() else -1
+        tx.result_desc = result_desc
+
+    await db.commit()
+    return {"ResultCode": 0, "ResultDesc": "Accepted"}

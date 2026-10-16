@@ -6,6 +6,7 @@ from sqlalchemy import String, Boolean, DateTime, ForeignKey, Numeric, Enum as S
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
+from app.core.datetime_utils import utcnow
 
 
 class Product(Base):
@@ -33,4 +34,4 @@ class Product(Base):
     item_cls_cd: Mapped[str] = mapped_column(String(20), default="24101601", nullable=False)  # WCO/UNSPSC
     pkg_unit_cd: Mapped[str] = mapped_column(String(10), default="PCE", nullable=False)  # Standard packaging unit
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

@@ -5,6 +5,7 @@ from sqlalchemy import String, Boolean, DateTime, ForeignKey, Text, Enum as SQLE
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
+from app.core.datetime_utils import utcnow
 
 
 class AuditLog(Base):
@@ -31,7 +32,7 @@ class AuditLog(Base):
     before_state: Mapped[Optional[dict]] = mapped_column("before", JSONB, nullable=True)
     after_state: Mapped[Optional[dict]] = mapped_column("after", JSONB, nullable=True)
     ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
 
 
 class Notification(Base):
@@ -45,4 +46,4 @@ class Notification(Base):
     type: Mapped[str] = mapped_column(String(50), default="SYSTEM", nullable=False)
     link: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
