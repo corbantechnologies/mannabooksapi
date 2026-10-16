@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc
@@ -95,29 +95,20 @@ def format_group_dict(g: GroupEntity) -> Dict[str, Any]:
     }
 
 
-async def resolve_user(db: AsyncSession, auth_header: Optional[str], user_id: Optional[uuid.UUID]) -> User:
-    if user_id:
-        u = await db.get(User, user_id)
-        if u:
-            return u
-    if auth_header:
-        parts = auth_header.split()
-        token = parts[1] if len(parts) > 1 else parts[0]
-        u = await verify_and_get_session(db, token)
-        if u:
-            return u
-    # Fallback to first owner
-    res = await db.execute(select(User).limit(1))
-    return res.scalar_one()
+async def resolve_user(request: Request) -> User:
+    """The signed-in caller. Never trust a user id from the request."""
+    principal = getattr(request.state, "principal", None)
+    if not principal or not principal.user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="A signed-in user is required.")
+    return principal.user
 
 
 @router.get("/groups")
 async def list_groups(
-    user_id: Optional[uuid.UUID] = Query(None),
-    authorization: Optional[str] = Header(None),
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    user = await resolve_user(db, authorization, user_id)
+    user = await resolve_user(request)
     stmt = (
         select(GroupEntity)
         .where(GroupEntity.owner_id == user.id)
@@ -159,11 +150,10 @@ async def get_group(
 @router.post("/groups", status_code=status.HTTP_201_CREATED)
 async def create_group(
     req: CreateGroupRequest,
-    user_id: Optional[uuid.UUID] = Query(None),
-    authorization: Optional[str] = Header(None),
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    user = await resolve_user(db, authorization, user_id)
+    user = await resolve_user(request)
     group = GroupEntity(
         name=req.name.strip(),
         code=req.code.strip().upper(),

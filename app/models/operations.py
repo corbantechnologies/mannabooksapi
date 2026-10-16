@@ -6,6 +6,7 @@ from sqlalchemy import String, Boolean, DateTime, Date, ForeignKey, Numeric, Tex
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
+from app.core.datetime_utils import utcnow
 
 production_order_status_enum = SQLEnum(
     'DRAFT', 'COMPLETED', 'CANCELLED',
@@ -47,7 +48,7 @@ class Budget(Base):
     month: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     year: Mapped[int] = mapped_column(Integer, default=2026, nullable=False)
     monthly_limit: Mapped[Decimal] = mapped_column(Numeric(15, 2), default=Decimal("0.00"), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class CostCenter(Base):
@@ -59,7 +60,7 @@ class CostCenter(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     department: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class BillOfMaterials(Base):
@@ -72,7 +73,7 @@ class BillOfMaterials(Base):
     labor_cost_estimate: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0.00"), nullable=False)
     overhead_cost_estimate: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0.00"), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class BomItem(Base):
@@ -98,7 +99,7 @@ class ProductionOrder(Base):
     status: Mapped[str] = mapped_column(production_order_status_enum, default="DRAFT", nullable=False)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class Stocktake(Base):
@@ -110,9 +111,9 @@ class Stocktake(Base):
     stocktake_number: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(stocktake_status_enum, default="DRAFT", nullable=False)
     conducted_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class StocktakeItem(Base):
@@ -142,8 +143,8 @@ class LoyaltyProgram(Base):
     point_value_kes: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("1.00"), nullable=False)
     min_redeem_points: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
     points_expiry_days: Mapped[int] = mapped_column(Integer, default=365, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class MembershipTier(Base):
@@ -157,7 +158,7 @@ class MembershipTier(Base):
     points_multiplier: Mapped[Decimal] = mapped_column(Numeric(4, 2), default=Decimal("1.00"), nullable=False)
     badge_color: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class ClientLoyaltyAccount(Base):
@@ -173,8 +174,8 @@ class ClientLoyaltyAccount(Base):
     wallet_balance_kes: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     membership_status: Mapped[str] = mapped_column(String(20), default="ACTIVE", nullable=False)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class LoyaltyLedger(Base):
@@ -191,7 +192,7 @@ class LoyaltyLedger(Base):
     source_document_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_by_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class FixedAsset(Base):
@@ -208,7 +209,7 @@ class FixedAsset(Base):
     is_disposed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     disposal_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     disposal_proceeds: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class TaxInstalment(Base):
@@ -224,7 +225,7 @@ class TaxInstalment(Base):
     paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     payment_reference: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, default="PENDING", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class WhtPayment(Base):
@@ -239,7 +240,7 @@ class WhtPayment(Base):
     wht_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     source_document_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     status: Mapped[str] = mapped_column(Text, default="PENDING", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class StorageBin(Base):
@@ -255,7 +256,7 @@ class StorageBin(Base):
     capacity_volume: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
     max_weight: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
     is_pickable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class ProductBatch(Base):
@@ -272,7 +273,7 @@ class ProductBatch(Base):
     initial_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     current_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     cost_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
     @property
     def product_id(self):

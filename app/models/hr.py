@@ -6,6 +6,7 @@ from sqlalchemy import String, Boolean, DateTime, Date, ForeignKey, Numeric, Tex
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
+from app.core.datetime_utils import utcnow
 
 employment_type_enum = SQLEnum(
     'FULL_TIME', 'PART_TIME', 'CONTRACT', 'INTERN',
@@ -48,7 +49,7 @@ class Employee(Base):
     bank_branch: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     mpesa_phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class ExpenseClaim(Base):
@@ -71,4 +72,4 @@ class ExpenseClaim(Base):
     approval_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     disbursed_expense_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("expenses.id", ondelete="SET NULL"), nullable=True)
     disbursed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

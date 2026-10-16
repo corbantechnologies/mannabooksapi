@@ -10,6 +10,7 @@ from app.models.account import ChartOfAccount
 from app.models.journal import JournalEntry
 from app.models.document import Document
 from app.models.expense import Expense
+from app.core.datetime_utils import utcnow
 
 
 DEFAULT_ACCOUNTS = [
@@ -92,7 +93,7 @@ async def post_document_to_gl(
     sub_total = Decimal(str(doc.sub_total or "0.00"))
     tax_amount = Decimal(str(doc.tax_amount or "0.00"))
     grand_total = Decimal(str(doc.grand_total or "0.00"))
-    entry_date = doc.issue_date or datetime.utcnow()
+    entry_date = doc.issue_date or utcnow()
 
     if doc_type == "INVOICE":
         debit_target = cash_acc.id if doc_status == "PAID" else ar_acc.id
@@ -254,7 +255,7 @@ async def run_full_gl_migration(db: AsyncSession, shop_id: uuid.UUID) -> Dict[st
         if exp_amt > Decimal("0.00"):
             je = JournalEntry(
                 shop_id=shop_id,
-                entry_date=exp.expense_date or exp.created_at or datetime.utcnow(),
+                entry_date=exp.expense_date or exp.created_at or utcnow(),
                 description=f"Expense Voucher: {exp.title or exp.category}",
                 debit_account_id=exp_acc.id,
                 credit_account_id=cash_acc.id,

@@ -1,3 +1,4 @@
+import logging
 import uuid
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -16,8 +17,10 @@ from app.modules.crons.service import (
     run_quote_expiry_sweep,
     run_etims_retry_daemon,
 )
+from app.core.datetime_utils import utcnow
 
 router = APIRouter(prefix="/crons", tags=["Lifecycle Automations & Crons"], dependencies=[Depends(verify_cron_or_internal_key)])
+logger = logging.getLogger("mannabooks.api")
 
 
 @router.post("/overdue-sweep", response_model=OverdueSweepResponse)
@@ -27,10 +30,11 @@ async def overdue_sweep_endpoint(
 ):
     try:
         return await run_overdue_sweep(db, shop_id=shop_id)
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to execute overdue sweep")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to execute overdue sweep: {str(e)}",
+            detail="Failed to execute overdue sweep. Please try again or contact support.",
         )
 
 
@@ -41,10 +45,11 @@ async def process_recurring_endpoint(
 ):
     try:
         return await run_process_recurring(db, shop_id=shop_id)
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to execute recurring processor")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to execute recurring processor: {str(e)}",
+            detail="Failed to execute recurring processor. Please try again or contact support.",
         )
 
 
@@ -55,10 +60,11 @@ async def quote_expiry_endpoint(
 ):
     try:
         return await run_quote_expiry_sweep(db, shop_id=shop_id)
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to execute quote expiry sweep")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to execute quote expiry sweep: {str(e)}",
+            detail="Failed to execute quote expiry sweep. Please try again or contact support.",
         )
 
 
@@ -69,10 +75,11 @@ async def etims_retry_endpoint(
 ):
     try:
         return await run_etims_retry_daemon(db, limit=limit)
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to trigger eTIMS retry daemon")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to trigger eTIMS retry daemon: {str(e)}",
+            detail="Failed to trigger eTIMS retry daemon. Please try again or contact support.",
         )
 
 
@@ -84,7 +91,7 @@ async def subscription_lifecycle_endpoint(
     from sqlalchemy import select, and_
     from app.models.identity import Shop, User
 
-    now = datetime.utcnow()
+    now = utcnow()
     # Find shops whose subscription expired
     q = select(Shop).where(
         and_(

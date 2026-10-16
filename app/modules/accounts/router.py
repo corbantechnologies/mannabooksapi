@@ -4,13 +4,14 @@ from app.core.datetime_utils import to_naive_utc
 from decimal import Decimal
 from typing import List, Optional
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select, and_, or_, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
-from app.api.deps import verify_internal_api_key
+from app.api.deps import verify_internal_api_key, get_acting_user_id
 from app.modules.accounts.schemas import AccountCreateRequest, AccountResponse
 from app.modules.accounts.service import list_accounts, create_account
+from app.core.datetime_utils import utcnow
 
 router = APIRouter(prefix="/accounts", tags=["Chart of Accounts"], dependencies=[Depends(verify_internal_api_key)])
 
@@ -232,6 +233,7 @@ async def list_journal_entries_endpoint(
 
 @router.post("/journal-entries", status_code=status.HTTP_201_CREATED)
 async def create_journal_entry_endpoint(
+    request: Request,
     req: CreateJournalEntryRequest,
     shop_id: uuid.UUID = Query(...),
     db: AsyncSession = Depends(get_db),
@@ -245,7 +247,7 @@ async def create_journal_entry_endpoint(
     if not debit_acc or not credit_acc:
         raise HTTPException(status_code=400, detail="Invalid debit or credit account ID")
 
-    now = datetime.utcnow()
+    now = utcnow()
     entry_date = req.entry_date or now
     is_backdated = (now - entry_date).days > 1 if entry_date < now else False
 
@@ -259,7 +261,7 @@ async def create_journal_entry_endpoint(
         reference_number=req.reference_number,
         cost_center_id=req.cost_center_id,
         source_type="manual",
-        created_by_id=req.created_by_id,
+        created_by_id=get_acting_user_id(request),
         is_backdated=is_backdated,
         backdated_reason=req.backdated_reason if is_backdated else None,
     )
@@ -477,7 +479,7 @@ async def close_period_endpoint(
     if not p:
         raise HTTPException(status_code=404, detail="Accounting period not found")
     p.status = "CLOSED"
-    p.closed_at = datetime.utcnow()
+    p.closed_at = utcnow()
     await db.commit()
     await db.refresh(p)
     return {"success": True, "message": f"Period '{p.period_name}' closed successfully."}
@@ -539,7 +541,7 @@ async def run_gl_migration_endpoint(
     sid = uuid.UUID(req["shop_id"]) if isinstance(req["shop_id"], str) else req["shop_id"]
     try:
         return await run_full_gl_migration(db, sid)
-    except Exception as e:
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -555,7 +557,7 @@ async def create_compound_journal_entry_endpoint(
     if not lines:
         raise HTTPException(status_code=400, detail="Journal entry lines required")
 
-    entry_date = to_naive_utc(req.get("entry_date")) or datetime.utcnow()
+    entry_date = to_naive_utc(req.get("entry_date")) or utcnow()
     desc_text = (req.get("description") or "Compound Journal Entry").strip()
     ref_num = req.get("reference_number")
     cc_id = uuid.UUID(req["cost_center_id"]) if req.get("cost_center_id") else None
@@ -633,7 +635,7 @@ async def create_opening_balances_endpoint(
     from app.models.journal import JournalEntry
     from app.models.account import ChartOfAccount
 
-    as_of = to_naive_utc(req.get("as_of_date")) or datetime.utcnow()
+    as_of = to_naive_utc(req.get("as_of_date")) or utcnow()
     lines = req.get("lines") or []
 
     eq_q = select(ChartOfAccount).where(

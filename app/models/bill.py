@@ -6,6 +6,7 @@ from sqlalchemy import String, DateTime, ForeignKey, Numeric, Text, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
+from app.core.datetime_utils import utcnow
 
 
 class VendorBill(Base):
@@ -16,7 +17,7 @@ class VendorBill(Base):
     supplier_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("suppliers.id"), nullable=False, index=True)
     bill_number: Mapped[str] = mapped_column("bill_number", String(50), nullable=False)
     reference: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    bill_date: Mapped[datetime] = mapped_column("bill_date", DateTime, default=datetime.utcnow, nullable=False)
+    bill_date: Mapped[datetime] = mapped_column("bill_date", DateTime, default=utcnow, nullable=False)
     due_date: Mapped[Optional[datetime]] = mapped_column("due_date", DateTime, nullable=True)
     sub_total: Mapped[Decimal] = mapped_column("sub_total", Numeric(12, 2), nullable=False)
     tax_amount: Mapped[Decimal] = mapped_column("tax_amount", Numeric(12, 2), default=Decimal("0.00"), nullable=False)
@@ -39,8 +40,8 @@ class VendorBill(Base):
     quantity_variance_count: Mapped[Decimal] = mapped_column("quantity_variance_count", Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     variance_notes: Mapped[Optional[str]] = mapped_column("variance_notes", Text, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column("updated_at", DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column("updated_at", DateTime, default=utcnow, nullable=False)
 
     supplier = relationship("Supplier", lazy="selectin")
     items = relationship("VendorBillItem", back_populates="bill", cascade="all, delete-orphan", lazy="selectin")

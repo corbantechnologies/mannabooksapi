@@ -17,6 +17,7 @@ from app.db.session import async_session_factory
 from app.models.etims import EtimsConfig, EtimsTransmission
 from app.modules.etims.crypto import decrypt_cmc_key
 from app.modules.etims.client import KraEtimsClient
+from app.core.datetime_utils import utcnow
 
 logger = logging.getLogger("etims.worker")
 
@@ -41,7 +42,7 @@ async def process_queued_transmissions(
             "reason": "ENABLE_KRA_ETIMS_GLOBAL is false",
         }
 
-    now = datetime.utcnow()
+    now = utcnow()
 
     # Query queued records where next_retry_at is null or has elapsed
     q = (
@@ -111,13 +112,13 @@ async def process_queued_transmissions(
                 else:
                     # Exponential backoff: 2^retries minutes (capped at 4 hours)
                     delay_minutes = min(2 ** tx.retry_count, 240)
-                    tx.next_retry_at = datetime.utcnow() + timedelta(minutes=delay_minutes)
+                    tx.next_retry_at = utcnow() + timedelta(minutes=delay_minutes)
                     stats["failed"] += 1
         except Exception as exc:
             tx.retry_count += 1
             tx.error_message = f"Network/worker error: {str(exc)}"
             delay_minutes = min(2 ** tx.retry_count, 240)
-            tx.next_retry_at = datetime.utcnow() + timedelta(minutes=delay_minutes)
+            tx.next_retry_at = utcnow() + timedelta(minutes=delay_minutes)
             stats["failed"] += 1
             logger.exception("Error processing transmission %s", tx.id)
 

@@ -11,11 +11,13 @@ from sqlalchemy import (
     Integer,
     JSON,
     Numeric,
+    Index,
     Enum as SQLEnum,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
+from app.core.datetime_utils import utcnow
 
 
 
@@ -35,7 +37,39 @@ class User(Base):
     auto_renew_phone: Mapped[Optional[str]] = mapped_column("auto_renew_phone", String(30), nullable=True)
     last_renewal_prompt_at: Mapped[Optional[datetime]] = mapped_column("last_renewal_prompt_at", DateTime, nullable=True)
     is_lifetime_pro: Mapped[bool] = mapped_column("is_lifetime_pro", Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    # JWTs issued before this instant are rejected (set on password change / "log out everywhere").
+    tokens_valid_after: Mapped[Optional[datetime]] = mapped_column("tokens_valid_after", DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class RevokedToken(Base):
+    """Denylist of individual JWTs (by jti) revoked at logout, kept until they expire."""
+    __tablename__ = "revoked_tokens"
+
+    jti: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
+class RefreshToken(Base):
+    """
+    Rotating refresh tokens. Each sign-in starts a `family`; every refresh replaces the token with a
+    new one in the same family. Presenting an already-rotated token (outside a short grace window)
+    means it was copied, so the whole family is revoked.
+    """
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    family_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    # Absolute end of the whole family (sign-in time + REFRESH_TOKEN_DAYS).
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    revoke_reason: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    replaced_by_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    user_agent: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    ip_address: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
 
 class Session(Base):
@@ -82,11 +116,13 @@ class Shop(Base):
     subscription_status: Mapped[str] = mapped_column(String(30), default="ACTIVE", nullable=False)
     is_lifetime_pro: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_suspended: Mapped[bool] = mapped_column("is_suspended", Boolean, default=False, nullable=False)
+    # Public catalog: issue quotations immediately instead of creating drafts for review.
+    catalog_auto_issue_quotes: Mapped[bool] = mapped_column("catalog_auto_issue_quotes", Boolean, default=False, nullable=False)
     suspended_reason: Mapped[Optional[str]] = mapped_column("suspended_reason", Text, nullable=True)
     trial_ends_at: Mapped[Optional[datetime]] = mapped_column("trial_ends_at", DateTime, nullable=True)
     subscription_expires_at: Mapped[Optional[datetime]] = mapped_column("subscription_expires_at", DateTime, nullable=True)
     grace_period_ends_at: Mapped[Optional[datetime]] = mapped_column("grace_period_ends_at", DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class ShopTerm(Base):
@@ -99,7 +135,7 @@ class ShopTerm(Base):
     display_order: Mapped[int] = mapped_column("display_order", Integer, default=0, nullable=False)
     is_default_invoice: Mapped[bool] = mapped_column("is_default_invoice", Boolean, default=False, nullable=False)
     is_default_catalog: Mapped[bool] = mapped_column("is_default_catalog", Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=utcnow, nullable=False)
 
 
 class ShopCurrency(Base):
@@ -112,8 +148,8 @@ class ShopCurrency(Base):
     symbol: Mapped[str] = mapped_column(String(10), default="$", nullable=False)
     exchange_rate: Mapped[Decimal] = mapped_column("exchange_rate", Numeric(12, 4), default=Decimal("1.0000"), nullable=False)
     is_enabled: Mapped[bool] = mapped_column("is_enabled", Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column("updated_at", DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column("updated_at", DateTime, default=utcnow, nullable=False)
 
 
 class BillingTransaction(Base):
@@ -131,12 +167,13 @@ class BillingTransaction(Base):
     result_desc: Mapped[Optional[str]] = mapped_column("result_desc", Text, nullable=True)
     target_plan: Mapped[str] = mapped_column("target_plan", String(30), nullable=False)
     billing_months: Mapped[int] = mapped_column("billing_months", Integer, default=1, nullable=False)
-    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=utcnow, nullable=False)
     completed_at: Mapped[Optional[datetime]] = mapped_column("completed_at", DateTime, nullable=True)
 
 
 class ShopMember(Base):
     __tablename__ = "shop_members"
+    __table_args__ = (Index("uq_shop_members_shop_user", "shop_id", "user_id", unique=True),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     shop_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False)
@@ -156,7 +193,7 @@ class ShopMember(Base):
     hide_cost_prices: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     direct_approval_limit: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
     user: Mapped["User"] = relationship("User", lazy="selectin")
     shop: Mapped["Shop"] = relationship("Shop", lazy="selectin")
@@ -189,7 +226,7 @@ class ShopInvitation(Base):
         default="PENDING",
         nullable=False,
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     shop: Mapped["Shop"] = relationship("Shop", lazy="selectin")
 
@@ -201,7 +238,7 @@ class PasswordResetToken(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     token: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
     user: Mapped["User"] = relationship("User", lazy="selectin")
 

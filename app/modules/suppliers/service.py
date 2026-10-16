@@ -1,3 +1,4 @@
+from decimal import Decimal
 import uuid
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -5,6 +6,7 @@ from sqlalchemy import select, and_, or_, desc
 from app.models.supplier import Supplier
 from app.modules.suppliers.schemas import SupplierCreateRequest, SupplierUpdateRequest
 from datetime import datetime, date, timezone, timedelta
+from app.core.datetime_utils import utcnow
 
 
 async def list_suppliers(
@@ -102,8 +104,8 @@ async def get_supplier_statement(
     shop_res = await db.execute(q_shop)
     shop = shop_res.scalar_one_or_none()
 
-    start = start_date or datetime(datetime.utcnow().year, 1, 1)
-    end = end_date or datetime.utcnow()
+    start = start_date or datetime(utcnow().year, 1, 1)
+    end = end_date or utcnow()
 
     q_docs = (
         select(Document)
@@ -120,15 +122,15 @@ async def get_supplier_statement(
     docs_res = await db.execute(q_docs)
     docs = docs_res.scalars().all()
 
-    running_balance = 0.0
-    total_debits = 0.0
-    total_credits = 0.0
+    running_balance = Decimal("0")
+    total_debits = Decimal("0")
+    total_credits = Decimal("0")
     lines = []
 
     for doc in docs:
-        amount = float(doc.grand_total or 0.0)
-        debit = 0.0
-        credit = 0.0
+        amount = Decimal(str(doc.grand_total or "0"))
+        debit = Decimal("0")
+        credit = Decimal("0")
 
         if doc.type in ["INVOICE", "GOODS_RECEIVED_NOTE", "SERVICE_COMPLETION_NOTE", "PO", "LPO", "LSO"]:
             if doc.status != "CANCELLED":

@@ -3,12 +3,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from app.db.session import get_db
 from app.core.config import get_settings
-from app.api.deps import verify_internal_api_key
+from app.api.deps import get_current_user, verify_internal_api_key
 from app.models.identity import Shop, ShopMember, ShopInvitation, User
 from app.modules.auth.service import verify_and_get_session
+from app.core.datetime_utils import utcnow
 
 settings = get_settings()
 
@@ -17,16 +19,11 @@ router = APIRouter(prefix="/workspaces", tags=["Workspaces"])
 
 @router.get("/my-workspaces")
 async def get_my_workspaces_endpoint(
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List all workspaces the authenticated user belongs to, auto-healing owner memberships."""
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
-
-    token = parts[1]
-    user = await verify_and_get_session(db, token)
+    user = current_user
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
 
@@ -57,7 +54,11 @@ async def get_my_workspaces_endpoint(
         if shop.id not in seen_ids:
             new_mem = ShopMember(shop_id=shop.id, user_id=user.id, role="OWNER", is_active=True)
             db.add(new_mem)
-            await db.commit()
+            try:
+                await db.commit()
+            except IntegrityError:
+                # A concurrent request already healed this membership.
+                await db.rollback()
             workspaces.append({
                 "id": str(shop.id),
                 "name": shop.name,
@@ -87,6 +88,7 @@ def serialize_shop(shop: Shop) -> dict:
         "fiscalYearStartMonth": getattr(shop, "fiscal_year_start_month", 1),
         "isGlEnabled": getattr(shop, "is_gl_enabled", False),
         "autoStockDeductionEnabled": getattr(shop, "auto_stock_deduction_enabled", True),
+        "catalogAutoIssueQuotes": getattr(shop, "catalog_auto_issue_quotes", False),
         "businessMode": getattr(shop, "business_mode", "HYBRID") or "HYBRID",
         "loyaltyEngineMode": getattr(shop, "loyalty_engine_mode", "OFF") or "OFF",
         "primaryColor": getattr(shop, "primary_color", "#064e3b") or "#064e3b",
@@ -99,16 +101,11 @@ def serialize_shop(shop: Shop) -> dict:
 @router.get("/by-slug/{slug}/context")
 async def get_workspace_context_by_slug(
     slug: str,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Resolve full active workspace context for Next.js layout and RSC rendering."""
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
-
-    token = parts[1]
-    user = await verify_and_get_session(db, token)
+    user = current_user
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
 
@@ -148,7 +145,13 @@ async def get_workspace_context_by_slug(
             is_active=True,
         )
         db.add(membership)
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            membership = (
+                await db.execute(select(ShopMember).where(ShopMember.shop_id == shop.id, ShopMember.user_id == user.id))
+            ).scalar_one_or_none()
 
     if not membership or not membership.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this workspace")
@@ -522,6 +525,7 @@ class WorkspaceSettingsUpdate(BaseModel):
     is_gl_enabled: Optional[bool] = None
     fiscal_year_start_month: Optional[int] = None
     auto_stock_deduction_enabled: Optional[bool] = None
+    catalog_auto_issue_quotes: Optional[bool] = None
     business_mode: Optional[str] = None
     loyalty_engine_mode: Optional[str] = None
 
@@ -546,15 +550,11 @@ class UpdateMemberRequest(BaseModel):
 @router.post("/create")
 async def create_workspace_endpoint(
     req: CreateWorkspaceRequest,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Creates an additional workspace for the authenticated user."""
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
-
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
 
@@ -596,26 +596,10 @@ async def create_workspace_endpoint(
 async def update_workspace_settings_endpoint(
     shop_id: str,
     req: WorkspaceSettingsUpdate,
-    authorization: Optional[str] = Header(None, description="Bearer <session_token>"),
-    x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Update workspace parameters (name, currency, branding, tax settings)."""
-    from app.core.config import get_settings
-    settings = get_settings()
-
-    is_authed = False
-    if x_internal_key and x_internal_key == settings.INTERNAL_API_KEY:
-        is_authed = True
-    elif authorization and authorization.lower().startswith("bearer "):
-        parts = authorization.split()
-        if len(parts) == 2:
-            user = await verify_and_get_session(db, parts[1])
-            if user:
-                is_authed = True
-
-    if not is_authed and settings.is_production:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized workspace mutation")
 
     import uuid
     try:
@@ -657,6 +641,8 @@ async def update_workspace_settings_endpoint(
         shop.fiscal_year_start_month = req.fiscal_year_start_month
     if req.auto_stock_deduction_enabled is not None:
         shop.auto_stock_deduction_enabled = req.auto_stock_deduction_enabled
+    if req.catalog_auto_issue_quotes is not None:
+        shop.catalog_auto_issue_quotes = req.catalog_auto_issue_quotes
     if req.business_mode is not None:
         shop.business_mode = req.business_mode
     if req.loyalty_engine_mode is not None:
@@ -780,15 +766,11 @@ async def get_workspace_invitations_endpoint(
 async def invite_team_member_endpoint(
     shop_id: str,
     req: InviteMemberRequest,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Invite or directly attach an employee to the workspace."""
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
-
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid")
 
@@ -842,7 +824,7 @@ async def invite_team_member_endpoint(
         direct_approval_limit=req.direct_approval_limit,
         token=invite_token,
         status="PENDING",
-        expires_at=datetime.utcnow() + timedelta(days=7),
+        expires_at=utcnow() + timedelta(days=7),
     )
     db.add(invitation)
     await db.commit()
@@ -854,14 +836,10 @@ async def invite_team_member_endpoint(
 async def cancel_invitation_endpoint(
     shop_id: str,
     invite_id: str,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke and delete a pending invitation."""
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
-
     q = select(ShopInvitation).where(ShopInvitation.id == invite_id, ShopInvitation.shop_id == shop_id)
     res = await db.execute(q)
     inv = res.scalar_one_or_none()
@@ -876,21 +854,24 @@ async def update_member_endpoint(
     shop_id: str,
     member_id: str,
     req: UpdateMemberRequest,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Update role, permissions, and settings for a team member."""
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
-
     q = select(ShopMember).where(ShopMember.id == member_id, ShopMember.shop_id == shop_id)
     res = await db.execute(q)
     member = res.scalar_one_or_none()
     if not member:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found")
+    owner_id = (await db.execute(select(Shop.owner_id).where(Shop.id == member.shop_id))).scalar_one_or_none()
+    if member.user_id == owner_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The workspace owner's membership cannot be changed.")
 
     if req.role is not None:
+        if req.role == "OWNER":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ownership cannot be assigned through member settings.")
+        if req.role == "ADMIN" and current_user.id != owner_id and not current_user.is_super_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the workspace owner can grant the ADMIN role.")
         member.role = req.role
     if req.custom_permissions is not None:
         import json
@@ -910,20 +891,20 @@ async def update_member_endpoint(
 async def remove_member_endpoint(
     shop_id: str,
     member_id: str,
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Deactivate or remove a team member from workspace."""
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token header format")
-
     q = select(ShopMember).where(ShopMember.id == member_id, ShopMember.shop_id == shop_id)
     res = await db.execute(q)
     member = res.scalar_one_or_none()
-    if member:
-        member.is_active = False
-        await db.commit()
+    if not member:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found")
+    owner_id = (await db.execute(select(Shop.owner_id).where(Shop.id == member.shop_id))).scalar_one_or_none()
+    if member.user_id == owner_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The workspace owner's membership cannot be changed.")
+    member.is_active = False
+    await db.commit()
     return {"success": True}
 
 
@@ -1152,7 +1133,7 @@ async def save_shop_currency(
         existing.symbol = req.symbol.strip()
         existing.exchange_rate = req.exchange_rate
         existing.is_enabled = req.is_enabled
-        existing.updated_at = datetime.utcnow()
+        existing.updated_at = utcnow()
     else:
         new_c = ShopCurrency(
             shop_id=parsed_id,
@@ -1505,11 +1486,10 @@ async def get_workspace_snapshots_endpoint(
 async def delete_workspace_endpoint(
     shop_id: str,
     confirmation: Optional[str] = Query(None),
-    authorization: str = Header(..., description="Bearer <session_token>"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    parts = authorization.split()
-    user = await verify_and_get_session(db, parts[1])
+    user = current_user
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -1611,7 +1591,7 @@ async def export_workspace_data(
             "slug": shop.slug,
             "currency": shop.currency,
             "taxPin": shop.tax_pin,
-            "exportedAt": datetime.utcnow().isoformat(),
+            "exportedAt": utcnow().isoformat(),
         }
     }
 

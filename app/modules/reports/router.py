@@ -1,6 +1,7 @@
+import logging
 import uuid
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, and_, or_, desc, func
@@ -23,8 +24,10 @@ from app.modules.reports.service import (
     get_stock_ledger_report,
     get_stock_valuation_report,
 )
+from app.core.datetime_utils import utcnow
 
 router = APIRouter(prefix="/reports", tags=["Financial Reports & Statutory Returns"], dependencies=[Depends(verify_internal_api_key)])
+logger = logging.getLogger("mannabooks.api")
 
 
 @router.get("/profit-loss", response_model=PLStatementResponse)
@@ -40,10 +43,11 @@ async def get_pl_statement_endpoint(
         return await get_pl_statement(
             db, shop_id=shop_id, period=period, start_date=start_date, end_date=end_date
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to generate Profit & Loss statement")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate Profit & Loss statement: {str(e)}",
+            detail="Failed to generate Profit & Loss statement. Please try again or contact support.",
         )
 
 
@@ -55,10 +59,11 @@ async def get_balance_sheet_endpoint(
 ):
     try:
         return await get_balance_sheet(db, shop_id=shop_id, as_of_date=as_of_date)
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to generate Balance Sheet")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate Balance Sheet: {str(e)}",
+            detail="Failed to generate Balance Sheet. Please try again or contact support.",
         )
 
 
@@ -70,10 +75,11 @@ async def get_trial_balance_endpoint(
 ):
     try:
         return await get_trial_balance(db, shop_id=shop_id, period_id=period_id)
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to generate Trial Balance")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate Trial Balance: {str(e)}",
+            detail="Failed to generate Trial Balance. Please try again or contact support.",
         )
 
 
@@ -88,10 +94,11 @@ async def get_vat_return_endpoint(
         return await get_vat_return_summary(
             db, shop_id=shop_id, start_date=start_date, end_date=end_date
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to generate VAT Return summary")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate VAT Return summary: {str(e)}",
+            detail="Failed to generate VAT Return summary. Please try again or contact support.",
         )
 
 
@@ -111,10 +118,11 @@ async def get_stock_ledger_endpoint(
             location_id=location_id,
             limit=limit,
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to generate Stock Ledger")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate Stock Ledger: {str(e)}",
+            detail="Failed to generate Stock Ledger. Please try again or contact support.",
         )
 
 
@@ -125,10 +133,11 @@ async def get_stock_valuation_endpoint(
 ):
     try:
         return await get_stock_valuation_report(db, shop_id=shop_id)
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to generate Stock Valuation")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate Stock Valuation: {str(e)}",
+            detail="Failed to generate Stock Valuation. Please try again or contact support.",
         )
 
 
@@ -147,7 +156,7 @@ async def get_payables_aging_endpoint(
     res = await db.execute(stmt)
     suppliers = res.scalars().all()
 
-    now = datetime.utcnow()
+    now = utcnow()
     aging_data = []
 
     for supp in suppliers:
@@ -343,35 +352,21 @@ async def get_cashflow_statement_endpoint(
 
 
 @router.post("/client-statement/{client_id}/email")
-async def email_client_statement_endpoint(
-    client_id: uuid.UUID,
-    req: dict = {},
-    db: AsyncSession = Depends(get_db),
-):
-    from app.models.client import Client
-    client = await db.get(Client, client_id)
-    recipient = req.get("email") or (client.email if client else "client@example.com")
-    return {
-        "success": True,
-        "message": f"Client statement dispatched to {recipient} successfully.",
-        "recipient": recipient,
-    }
+async def email_client_statement_endpoint(client_id: uuid.UUID):
+    # Not implemented yet: fail loudly instead of reporting a fake success.
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Emailing client statements is not available yet. Download or print the statement instead.",
+    )
 
 
 @router.post("/supplier-statement/{supplier_id}/email")
-async def email_supplier_statement_endpoint(
-    supplier_id: uuid.UUID,
-    req: dict = {},
-    db: AsyncSession = Depends(get_db),
-):
-    from app.models.supplier import Supplier
-    supp = await db.get(Supplier, supplier_id)
-    recipient = req.get("email") or (supp.email if supp else "supplier@example.com")
-    return {
-        "success": True,
-        "message": f"Supplier statement dispatched to {recipient} successfully.",
-        "recipient": recipient,
-    }
+async def email_supplier_statement_endpoint(supplier_id: uuid.UUID):
+    # Not implemented yet: fail loudly instead of reporting a fake success.
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Emailing supplier statements is not available yet. Download or print the statement instead.",
+    )
 
 
 @router.get("/client-statement/{client_id}")
@@ -514,7 +509,7 @@ async def get_analytics_overview(
     except Exception:
         rev, cogs, exp, gp, net = 0.0, 0.0, 0.0, 0.0, 0.0
 
-    now = datetime.utcnow()
+    now = utcnow()
 
     # 2. Pending Receivables & AR Aging
     current0To30 = 0.0

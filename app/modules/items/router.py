@@ -333,27 +333,30 @@ async def create_stock_transfer_endpoint(
 
 
 @router.post("/transfers/{transfer_id}/dispatch")
-async def dispatch_stock_transfer_endpoint(
-    transfer_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    return {"success": True, "transferId": str(transfer_id), "status": "IN_TRANSIT"}
+async def dispatch_stock_transfer_endpoint(transfer_id: uuid.UUID):
+    # Transfers are posted as COMPLETED when created; a staged dispatch/receive workflow is not implemented.
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Transfer dispatch is not supported yet. Transfers are completed when they are created.",
+    )
 
 
 @router.post("/transfers/{transfer_id}/receive")
-async def receive_stock_transfer_endpoint(
-    transfer_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    return {"success": True, "transferId": str(transfer_id), "status": "COMPLETED"}
+async def receive_stock_transfer_endpoint(transfer_id: uuid.UUID):
+    # Transfers are posted as COMPLETED when created; a staged dispatch/receive workflow is not implemented.
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Transfer receive is not supported yet. Transfers are completed when they are created.",
+    )
 
 
 @router.post("/transfers/{transfer_id}/cancel")
-async def cancel_stock_transfer_endpoint(
-    transfer_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    return {"success": True, "transferId": str(transfer_id), "status": "CANCELLED"}
+async def cancel_stock_transfer_endpoint(transfer_id: uuid.UUID):
+    # Transfers are posted as COMPLETED when created; a staged dispatch/receive workflow is not implemented.
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Transfer cancel is not supported yet. Transfers are completed when they are created.",
+    )
 
 
 # ==========================================

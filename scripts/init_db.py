@@ -2,31 +2,12 @@ import asyncio
 from app.db.session import engine
 from app.db.base import Base
 
-# Import all model modules so they register on Base.metadata
-from app.models.identity import (
-    User, Session, Shop, ShopMember, PasswordResetToken,
-    ShopTerm, ShopCurrency, BillingTransaction
-)
-from app.models.etims import EtimsConfig, EtimsSequence, EtimsTransmission
-from app.models.client import Client
-from app.models.supplier import Supplier
-from app.models.item import Product
-from app.models.account import ChartOfAccount, FiscalYear, AccountingPeriod
-from app.models.document import Document, DocumentItem
-from app.models.payment import DocumentPayment, PaymentMethod
-from app.models.expense import Expense, Income
-from app.models.journal import JournalEntry
-from app.models.hr import Employee, ExpenseClaim
-from app.models.crm import (
-    Deal, DealActivity, Proposal, ProposalItem, ProposalToken,
-    Contract, ContractHoursLog, Project, ProjectMember, Timesheet, ProjectMilestone
-)
-from app.models.operations import (
-    Budget, CostCenter, BillOfMaterials, BomItem, ProductionOrder,
-    Stocktake, StocktakeItem, LoyaltyProgram, MembershipTier,
-    ClientLoyaltyAccount, LoyaltyLedger, StorageBin, ProductBatch
-)
-from app.models.governance import AuditLog, Notification
+# Import every model module so they register on Base.metadata.
+import app.db.all_models  # noqa: F401
+
+# NOTE: Deployed databases are now managed by Alembic (alembic/versions). This script only
+# bootstraps throwaway local databases (AUTO_INIT_DB=true). Do not add new schema changes here;
+# create an Alembic revision instead.
 
 from sqlalchemy import text
 
@@ -486,6 +467,7 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE shops ADD COLUMN IF NOT EXISTS auto_stock_deduction_enabled BOOLEAN DEFAULT TRUE NOT NULL;",
     "ALTER TABLE shops ADD COLUMN IF NOT EXISTS business_mode VARCHAR(30) DEFAULT 'HYBRID' NOT NULL;",
     "ALTER TABLE shops ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN DEFAULT FALSE NOT NULL;",
+    "ALTER TABLE shops ADD COLUMN IF NOT EXISTS catalog_auto_issue_quotes BOOLEAN DEFAULT FALSE NOT NULL;",
     "ALTER TABLE shops ADD COLUMN IF NOT EXISTS suspended_reason TEXT;",
     "ALTER TABLE shops ADD COLUMN IF NOT EXISTS trial_ends_at TIMESTAMP;",
     "ALTER TABLE shops ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMP;",
@@ -503,6 +485,7 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_lifetime_pro BOOLEAN DEFAULT FALSE NOT NULL;",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super_admin BOOLEAN DEFAULT FALSE NOT NULL;",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL;",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS tokens_valid_after TIMESTAMP;",
 
     # --- SHOP MEMBERS ---
     "ALTER TABLE shop_members ADD COLUMN IF NOT EXISTS custom_permissions TEXT;",

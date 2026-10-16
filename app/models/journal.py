@@ -6,6 +6,7 @@ from sqlalchemy import String, Boolean, DateTime, ForeignKey, Numeric, Text, Enu
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
+from app.core.datetime_utils import utcnow
 
 
 class JournalEntry(Base):
@@ -31,4 +32,4 @@ class JournalEntry(Base):
     created_by_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     is_backdated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     backdated_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

@@ -6,6 +6,7 @@ from sqlalchemy import String, Boolean, DateTime, ForeignKey, Numeric, Text, Enu
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
+from app.core.datetime_utils import utcnow
 
 
 class Expense(Base):
@@ -27,7 +28,7 @@ class Expense(Base):
     payment_reference: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     receipt_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_non_deductible: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class Income(Base):
@@ -48,4 +49,4 @@ class Income(Base):
     payment_channel: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     payment_reference: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     attachment_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

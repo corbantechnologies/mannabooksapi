@@ -1,3 +1,4 @@
+import logging
 import uuid
 import secrets
 from decimal import Decimal
@@ -18,7 +19,11 @@ from app.modules.documents.schemas import (
 )
 from datetime import datetime, timedelta
 from app.core.datetime_utils import to_naive_utc
+from app.core.datetime_utils import utcnow
 
+
+
+logger = logging.getLogger("mannabooks.documents")
 
 def compute_item_tax_and_total(quantity: Decimal, unit_price: Decimal, tax_type: str) -> Tuple[Decimal, Decimal]:
     """Calculates tax amount and item total based on standard statutory rules."""
@@ -97,7 +102,7 @@ async def generate_doc_number(db: AsyncSession, shop_id: uuid.UUID, doc_type: st
         "PO": "PO",
         "LSO": "LSO",
         "DELIVERY_NOTE": "DN",
-        "DEBIT_NOTE": "DN",
+        "DEBIT_NOTE": "DBN",
         "GOODS_RECEIVED_NOTE": "GRN",
         "PAYMENT_VOUCHER": "PV",
         "PAYROLL_VOUCHER": "PRV",
@@ -210,7 +215,7 @@ async def create_document(db: AsyncSession, shop_id: uuid.UUID, req: DocumentCre
         sub_total=total_sub,
         tax_amount=total_tax,
         grand_total=grand_total,
-        issue_date=to_naive_utc(req.issue_date) or datetime.utcnow(),
+        issue_date=to_naive_utc(req.issue_date) or utcnow(),
         due_date=to_naive_utc(req.due_date),
         location_id=req.location_id,
         payment_channel=req.payment_channel,
@@ -229,7 +234,7 @@ async def create_document(db: AsyncSession, shop_id: uuid.UUID, req: DocumentCre
         from app.modules.accounts.gl_service import post_document_to_gl
         await post_document_to_gl(db, shop_id, doc)
     except Exception as gl_err:
-        print(f"[GL Auto-Post Info] {gl_err}")
+        logger.warning("GL Auto-Post Info: %s", gl_err)
 
     await db.commit()
     return await get_document_by_id(db, shop_id, doc.id)
@@ -343,7 +348,7 @@ async def issue_credit_note(
         sub_total=total_sub,
         tax_amount=total_tax,
         grand_total=grand_total,
-        issue_date=datetime.utcnow(),
+        issue_date=utcnow(),
         items=cn_items,
     )
 
@@ -354,7 +359,7 @@ async def issue_credit_note(
         from app.modules.accounts.gl_service import post_document_to_gl
         await post_document_to_gl(db, shop_id, credit_doc)
     except Exception as gl_err:
-        print(f"[GL Credit Note Post Info] {gl_err}")
+        logger.warning("GL Credit Note Post Info: %s", gl_err)
 
     await db.commit()
     return await get_document_by_id(db, shop_id, credit_doc.id)
@@ -373,7 +378,7 @@ async def update_document_status(
         from app.modules.accounts.gl_service import post_document_to_gl
         await post_document_to_gl(db, shop_id, doc)
     except Exception as gl_err:
-        print(f"[GL Status Update Post Info] {gl_err}")
+        logger.warning("GL Status Update Post Info: %s", gl_err)
 
     await db.commit()
     return await get_document_by_id(db, shop_id, document_id)
@@ -515,7 +520,7 @@ async def convert_document(
         sub_total=source_doc.sub_total,
         tax_amount=source_doc.tax_amount,
         grand_total=source_doc.grand_total,
-        issue_date=datetime.utcnow(),
+        issue_date=utcnow(),
         due_date=source_doc.due_date,
         location_id=source_doc.location_id,
         items=[
@@ -796,7 +801,7 @@ async def generate_recurring_cycle(db: AsyncSession, shop_id: uuid.UUID, documen
         raise ValueError("Source recurring invoice template could not be found.")
 
     new_doc_number = await generate_doc_number(db, shop_id, "INVOICE")
-    now = datetime.utcnow()
+    now = utcnow()
     due = now + timedelta(days=30)
 
     new_doc = Document(

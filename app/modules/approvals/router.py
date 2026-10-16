@@ -136,25 +136,12 @@ async def list_approval_requests(
 
 
 @router.post("/requests")
-async def create_approval_request(
-    req: CreateApprovalRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    req_id = str(uuid.uuid4())
-    return {
-        "success": True,
-        "request": {
-            "id": req_id,
-            "shopId": str(req.shop_id),
-            "title": req.title,
-            "entityType": req.entity_type,
-            "entityId": str(req.entity_id) if req.entity_id else None,
-            "amount": float(req.amount),
-            "status": "PENDING",
-            "notes": req.notes,
-            "createdAt": datetime.utcnow().isoformat(),
-        },
-    }
+async def create_approval_request(req: CreateApprovalRequest):
+    # Custom approval requests are not persisted yet; bills and draft documents appear in the queue automatically.
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Creating custom approval requests is not available yet.",
+    )
 
 
 @router.post("/requests/{request_id}/decision")
@@ -177,4 +164,4 @@ async def record_approval_decision(
         await db.commit()
         return {"success": True, "status": doc.status, "message": f"Document status set to {doc.status}"}
 
-    return {"success": True, "status": req.action.upper(), "message": f"Approval decision recorded: {req.action}"}
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval request not found")

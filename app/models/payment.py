@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 import app.models.identity  # noqa: F401 - ensure User model is in registry
+from app.core.datetime_utils import utcnow
 
 
 class DocumentPayment(Base):
@@ -23,12 +24,12 @@ class DocumentPayment(Base):
     document_id: Mapped[uuid.UUID] = mapped_column("document_id", UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     shop_id: Mapped[uuid.UUID] = mapped_column("shop_id", UUID(as_uuid=True), ForeignKey("shops.id", ondelete="CASCADE"), nullable=False, index=True)
     amount: Mapped[Decimal] = mapped_column("amount", Numeric(12, 2), nullable=False)
-    payment_date: Mapped[datetime] = mapped_column("payment_date", DateTime, default=datetime.utcnow, nullable=False)
+    payment_date: Mapped[datetime] = mapped_column("payment_date", DateTime, default=utcnow, nullable=False)
     payment_channel: Mapped[str] = mapped_column("payment_channel", String(50), default="BANK", nullable=False)  # MPESA, BANK, CASH, CHEQUE, OTHER
     payment_reference: Mapped[Optional[str]] = mapped_column("payment_reference", String(100), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     recorded_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column("recorded_by_user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=utcnow, nullable=False)
 
     recorded_by = relationship("User", lazy="selectin", foreign_keys=[recorded_by_user_id])
 
@@ -41,7 +42,7 @@ class PaymentMethod(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     details: Mapped[str] = mapped_column(Text, nullable=False)
     is_default: Mapped[bool] = mapped_column("is_default", Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column("created_at", DateTime, default=utcnow, nullable=False)
 
     def to_dict(self) -> dict:
         return serialize_payment_method(self)
