@@ -535,49 +535,12 @@ async def run_gl_migration_endpoint(
     req: dict,
     db: AsyncSession = Depends(get_db),
 ):
-    from sqlalchemy import and_
-    from app.models.identity import Shop
-    from app.models.account import ChartOfAccount
+    from app.modules.accounts.gl_service import run_full_gl_migration
     sid = uuid.UUID(req["shop_id"]) if isinstance(req["shop_id"], str) else req["shop_id"]
-    shop = await db.get(Shop, sid)
-    if not shop:
-        raise HTTPException(status_code=404, detail="Shop not found")
-    
-    default_accounts = [
-        {"code": "1000", "name": "Current Assets", "account_type": "ASSET", "is_system": True},
-        {"code": "1200", "name": "Cash and Bank", "account_type": "ASSET", "is_system": True},
-        {"code": "1300", "name": "Accounts Receivable", "account_type": "ASSET", "is_system": True},
-        {"code": "1400", "name": "Inventory Asset", "account_type": "ASSET", "is_system": True},
-        {"code": "2000", "name": "Current Liabilities", "account_type": "LIABILITY", "is_system": True},
-        {"code": "2100", "name": "Accounts Payable", "account_type": "LIABILITY", "is_system": True},
-        {"code": "2200", "name": "VAT Payable (Output VAT)", "account_type": "LIABILITY", "is_system": True},
-        {"code": "3000", "name": "Owner's Equity", "account_type": "EQUITY", "is_system": True},
-        {"code": "3100", "name": "Retained Earnings", "account_type": "EQUITY", "is_system": True},
-        {"code": "3200", "name": "Opening Balances Equity", "account_type": "EQUITY", "is_system": True},
-        {"code": "4000", "name": "Sales Revenue", "account_type": "REVENUE", "is_system": True},
-        {"code": "5000", "name": "Cost of Goods Sold (COGS)", "account_type": "EXPENSE", "is_system": True},
-        {"code": "6000", "name": "Operating Expenses", "account_type": "EXPENSE", "is_system": True},
-    ]
-
-    for da in default_accounts:
-        chk = await db.execute(
-            select(ChartOfAccount).where(
-                and_(ChartOfAccount.shop_id == sid, ChartOfAccount.code == da["code"])
-            )
-        )
-        if not chk.scalar_one_or_none():
-            acc = ChartOfAccount(
-                shop_id=sid,
-                code=da["code"],
-                name=da["name"],
-                account_type=da["account_type"],
-                is_system=da["is_system"],
-            )
-            db.add(acc)
-
-    shop.is_gl_enabled = True
-    await db.commit()
-    return {"success": True, "message": "General Ledger migration completed successfully"}
+    try:
+        return await run_full_gl_migration(db, sid)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/compound-journal-entries", status_code=status.HTTP_201_CREATED)

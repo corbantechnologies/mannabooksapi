@@ -67,6 +67,9 @@ def _compute_period_range(period: str, start_date: Optional[datetime], end_date:
             e = datetime(now.year, end_month, 1, 0, 0, 0) - timedelta(microseconds=1)
         return s, e
 
+    if p == "ALL_TIME":
+        return datetime(2000, 1, 1, 0, 0, 0), datetime(2099, 12, 31, 23, 59, 59)
+
     # Default THIS_YEAR (Calendar / FY start Jan 1)
     s = datetime(now.year, 1, 1, 0, 0, 0)
     e = datetime(now.year, 12, 31, 23, 59, 59)

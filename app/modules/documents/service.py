@@ -224,6 +224,13 @@ async def create_document(db: AsyncSession, shop_id: uuid.UUID, req: DocumentCre
     tok = DocumentToken(document_id=doc.id, token=secrets.token_hex(32))
     db.add(tok)
 
+    # Automatically post double-entry GL journal entry if GL is active
+    try:
+        from app.modules.accounts.gl_service import post_document_to_gl
+        await post_document_to_gl(db, shop_id, doc)
+    except Exception as gl_err:
+        print(f"[GL Auto-Post Info] {gl_err}")
+
     await db.commit()
     return await get_document_by_id(db, shop_id, doc.id)
 
@@ -341,6 +348,14 @@ async def issue_credit_note(
     )
 
     db.add(credit_doc)
+    await db.flush()
+
+    try:
+        from app.modules.accounts.gl_service import post_document_to_gl
+        await post_document_to_gl(db, shop_id, credit_doc)
+    except Exception as gl_err:
+        print(f"[GL Credit Note Post Info] {gl_err}")
+
     await db.commit()
     return await get_document_by_id(db, shop_id, credit_doc.id)
 
@@ -352,6 +367,14 @@ async def update_document_status(
     if not doc:
         return None
     doc.status = normalize_doc_status(new_status)
+    await db.flush()
+
+    try:
+        from app.modules.accounts.gl_service import post_document_to_gl
+        await post_document_to_gl(db, shop_id, doc)
+    except Exception as gl_err:
+        print(f"[GL Status Update Post Info] {gl_err}")
+
     await db.commit()
     return await get_document_by_id(db, shop_id, document_id)
 

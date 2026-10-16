@@ -467,14 +467,45 @@ analytics_router = APIRouter(prefix="/analytics", tags=["Analytics"])
 async def get_analytics_overview(
     shop_id: uuid.UUID = Query(...),
     timeframe: str = Query("THIS_MONTH"),
+    fiscal_year_id: Optional[uuid.UUID] = Query(None),
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     from app.models.identity import Shop
+    from app.models.account import FiscalYear
+    from app.models.document import Document, DocumentItem
+    from app.models.client import Client
+    from app.models.expense import Expense
+    from app.models.bill import VendorBill
+    from app.modules.reports.service import _compute_period_range
+
     shop = await db.get(Shop, shop_id)
     currency = shop.currency if shop else "KES"
 
+    # Resolve active fiscal year context
+    active_fy = None
+    if fiscal_year_id:
+        active_fy = await db.get(FiscalYear, fiscal_year_id)
+    if not active_fy:
+        q_curr_fy = select(FiscalYear).where(
+            and_(FiscalYear.shop_id == shop_id, FiscalYear.is_current == True)
+        )
+        res_curr_fy = await db.execute(q_curr_fy)
+        active_fy = res_curr_fy.scalar_one_or_none()
+
+    # Scope timeframe to fiscal year dates if requested
+    if timeframe == "THIS_YEAR" and active_fy and not (start_date and end_date):
+        start_date = datetime.combine(active_fy.start_date, datetime.min.time())
+        end_date = datetime.combine(active_fy.end_date, datetime.max.time())
+
+    s_date, e_date = _compute_period_range(timeframe, start_date, end_date)
+
+    # 1. Profit & Loss calculations
     try:
-        pl = await get_pl_statement(db, shop_id=shop_id, period=timeframe)
+        pl = await get_pl_statement(
+            db, shop_id=shop_id, period=timeframe, start_date=s_date, end_date=e_date
+        )
         rev = float(pl.total_revenue)
         cogs = float(pl.total_cogs)
         exp = float(pl.total_expenses)
@@ -485,10 +516,231 @@ async def get_analytics_overview(
 
     now = datetime.utcnow()
 
+    # 2. Pending Receivables & AR Aging
+    current0To30 = 0.0
+    due31To60 = 0.0
+    late61To90 = 0.0
+    overdue90Plus = 0.0
+    totalAr = 0.0
+
+    q_unpaid = select(Document.issue_date, Document.balance_due, Document.grand_total).where(
+        and_(
+            Document.shop_id == shop_id,
+            Document.type == "INVOICE",
+            Document.status.notin_(["PAID", "CANCELLED"]),
+        )
+    )
+    res_unpaid = await db.execute(q_unpaid)
+    unpaid_rows = res_unpaid.all()
+    for row in unpaid_rows:
+        issue_d = row[0] or now
+        bal = float(row[1] if row[1] is not None else (row[2] or 0.0))
+        diff = max(0, (now - issue_d).days)
+        if diff <= 30:
+            current0To30 += bal
+        elif diff <= 60:
+            due31To60 += bal
+        elif diff <= 90:
+            late61To90 += bal
+        else:
+            overdue90Plus += bal
+        totalAr += bal
+
+    # 3. Accounts Payable Debt
+    q_ap_bills = select(func.coalesce(func.sum(VendorBill.net_payable - VendorBill.amount_paid), 0.0)).where(
+        and_(
+            VendorBill.shop_id == shop_id,
+            VendorBill.status.notin_(["PAID", "CANCELLED"]),
+        )
+    )
+    res_ap = await db.execute(q_ap_bills)
+    ap_debt = float(res_ap.scalar() or 0.0)
+
+    # 4. Top Selling Products
+    q_top_prod = (
+        select(
+            DocumentItem.item_name,
+            func.sum(DocumentItem.quantity).label("qty"),
+            func.sum(DocumentItem.total_price).label("tot")
+        )
+        .join(Document, Document.id == DocumentItem.document_id)
+        .where(
+            and_(
+                Document.shop_id == shop_id,
+                Document.type.in_(["INVOICE", "RECEIPT"]),
+                Document.issue_date >= s_date,
+                Document.issue_date <= e_date,
+                Document.status != "CANCELLED",
+            )
+        )
+        .group_by(DocumentItem.item_name)
+        .order_by(desc("tot"))
+        .limit(10)
+    )
+    res_top_prod = await db.execute(q_top_prod)
+    top_products = []
+    for p_row in res_top_prod.all():
+        p_name = p_row[0] or "General Product"
+        p_qty = float(p_row[1] or 0)
+        p_tot = float(p_row[2] or 0)
+        top_products.append({
+            "id": p_name,
+            "name": p_name,
+            "quantitySold": p_qty,
+            "revenueGenerated": p_tot,
+            "revenueSharePercent": round(p_tot / rev * 100, 2) if rev > 0 else 0.0,
+        })
+
+    # 5. Top Clients Leaderboard
+    q_top_cl = (
+        select(
+            Document.client_id,
+            func.sum(Document.grand_total).label("ltv"),
+            func.count(Document.id).label("doc_count")
+        )
+        .where(
+            and_(
+                Document.shop_id == shop_id,
+                Document.type.in_(["INVOICE", "RECEIPT"]),
+                Document.issue_date >= s_date,
+                Document.issue_date <= e_date,
+                Document.status != "CANCELLED",
+                Document.client_id.isnot(None),
+            )
+        )
+        .group_by(Document.client_id)
+        .order_by(desc("ltv"))
+        .limit(10)
+    )
+    res_top_cl = await db.execute(q_top_cl)
+    cl_rows = res_top_cl.all()
+    top_clients = []
+    top_ten_clients = []
+    if cl_rows:
+        client_ids = [r[0] for r in cl_rows]
+        q_c_names = select(Client.id, Client.name).where(Client.id.in_(client_ids))
+        res_c_names = await db.execute(q_c_names)
+        c_map = {str(cid): cname for cid, cname in res_c_names.all()}
+        for cl_id, cl_ltv, cl_cnt in cl_rows:
+            val = float(cl_ltv or 0)
+            cname = c_map.get(str(cl_id), "Direct Client")
+            share = round(val / rev * 100, 2) if rev > 0 else 0.0
+            top_clients.append({
+                "id": str(cl_id),
+                "name": cname,
+                "ltv": val,
+                "revenueSharePercent": share,
+            })
+            top_ten_clients.append({
+                "id": str(cl_id),
+                "name": cname,
+                "ltv": val,
+                "revenueSharePercent": share,
+                "invoiceCount": int(cl_cnt),
+            })
+
+    # 6. Monthly Inflow & Outflow Timeline (Trailing 12 Months)
+    twelve_month_timeline = []
+    for i in range(11, -1, -1):
+        # Month calculation
+        year = now.year
+        month = now.month - i
+        while month <= 0:
+            month += 12
+            year -= 1
+        m_start = datetime(year, month, 1, 0, 0, 0)
+        if month == 12:
+            m_end = datetime(year + 1, 1, 1, 0, 0, 0) - timedelta(microseconds=1)
+        else:
+            m_end = datetime(year, month + 1, 1, 0, 0, 0) - timedelta(microseconds=1)
+
+        q_m_in = select(func.coalesce(func.sum(Document.grand_total), 0.0)).where(
+            and_(
+                Document.shop_id == shop_id,
+                Document.type.in_(["INVOICE", "RECEIPT"]),
+                Document.issue_date >= m_start,
+                Document.issue_date <= m_end,
+                Document.status != "CANCELLED",
+            )
+        )
+        res_m_in = await db.execute(q_m_in)
+        m_inflow = float(res_m_in.scalar() or 0.0)
+
+        q_m_out = select(func.coalesce(func.sum(Expense.amount), 0.0)).where(
+            and_(
+                Expense.shop_id == shop_id,
+                Expense.date >= m_start,
+                Expense.date <= m_end,
+            )
+        )
+        res_m_out = await db.execute(q_m_out)
+        m_outflow = float(res_m_out.scalar() or 0.0)
+
+        twelve_month_timeline.append({
+            "monthLabel": m_start.strftime("%b %Y"),
+            "inflow": m_inflow,
+            "outflow": m_outflow,
+            "netProfit": m_inflow - m_outflow,
+        })
+
+    monthly_timeline = [
+        {"monthLabel": t["monthLabel"], "inflow": t["inflow"], "outflow": t["outflow"]}
+        for t in twelve_month_timeline[-6:]
+    ]
+
+    # 7. Quotation Pipeline Conversion
+    q_quotes_tot = select(
+        func.count(Document.id),
+        func.coalesce(func.sum(Document.grand_total), 0.0)
+    ).where(
+        and_(
+            Document.shop_id == shop_id,
+            Document.type == "QUOTATION",
+            Document.issue_date >= s_date,
+            Document.issue_date <= e_date,
+            Document.status != "CANCELLED",
+        )
+    )
+    res_q_tot = await db.execute(q_quotes_tot)
+    q_tot_cnt, q_tot_val = res_q_tot.first() or (0, 0.0)
+    q_tot_cnt = int(q_tot_cnt or 0)
+    q_tot_val = float(q_tot_val or 0.0)
+
+    q_quotes_acc = select(
+        func.count(Document.id),
+        func.coalesce(func.sum(Document.grand_total), 0.0)
+    ).where(
+        and_(
+            Document.shop_id == shop_id,
+            Document.type == "QUOTATION",
+            Document.issue_date >= s_date,
+            Document.issue_date <= e_date,
+            Document.status.in_(["ACCEPTED", "CONVERTED", "PAID"]),
+        )
+    )
+    res_q_acc = await db.execute(q_quotes_acc)
+    q_acc_cnt, q_acc_val = res_q_acc.first() or (0, 0.0)
+    q_acc_cnt = int(q_acc_cnt or 0)
+    q_acc_val = float(q_acc_val or 0.0)
+
+    quotation_conversion = {
+        "totalQuotesIssued": q_tot_cnt,
+        "totalQuotesAcceptedOrConverted": q_acc_cnt,
+        "conversionRatePercent": round((q_acc_cnt / q_tot_cnt * 100), 2) if q_tot_cnt > 0 else 0.0,
+        "totalQuotedValue": q_tot_val,
+        "totalConvertedValue": q_acc_val,
+    }
+
+    # KRA VAT 20th tracker calculation
+    kra_deadline = datetime(now.year, now.month, 20, 23, 59, 59)
+    days_rem = max(0, (kra_deadline - now).days) if now < kra_deadline else 0
+
     return {
         "success": True,
         "timeframe": timeframe,
         "currency": currency,
+        "activeFiscalYearLabel": active_fy.label if active_fy else None,
+        "activeFiscalYearId": str(active_fy.id) if active_fy else None,
         "totalSettledInflow": rev,
         "totalSettledOutflow": cogs + exp,
         "netOperatingCashFlow": net,
@@ -499,11 +751,11 @@ async def get_analytics_overview(
         "netOperatingProfit": gp - exp,
         "netIncome": net,
         "grossProfitMargin": round((gp / rev * 100), 2) if rev > 0 else 0.0,
-        "pendingReceivables": 0.0,
-        "accountsPayableDebt": 0.0,
-        "monthlyTimeline": [],
+        "pendingReceivables": totalAr,
+        "accountsPayableDebt": ap_debt,
+        "monthlyTimeline": monthly_timeline,
         "kraVatSummary": {
-            "daysRemaining": 20,
+            "daysRemaining": days_rem,
             "currentMonthName": now.strftime("%B"),
             "outputVat16": round(rev * 0.16, 2),
             "zeroRatedVolume": 0,
@@ -511,17 +763,24 @@ async def get_analytics_overview(
             "taxableSalesVolume": rev,
         },
         "arAging": {
-            "current0To30": 0,
-            "due31To60": 0,
-            "late61To90": 0,
-            "overdue90Plus": 0,
-            "totalAr": 0,
+            "current0To30": current0To30,
+            "due31To60": due31To60,
+            "late61To90": late61To90,
+            "overdue90Plus": overdue90Plus,
+            "totalAr": totalAr,
         },
-        "topProducts": [],
-        "topClients": [],
-        "twelveMonthTimeline": [],
-        "topTenClients": [],
-        "productServiceSplit": {"products": rev, "services": 0},
+        "topProducts": top_products,
+        "topClients": top_clients,
+        "twelveMonthTimeline": twelve_month_timeline,
+        "topTenClients": top_ten_clients,
+        "productServiceSplit": {
+            "productRevenue": rev,
+            "serviceRevenue": 0.0,
+            "totalRevenue": rev,
+            "productPercent": 100.0 if rev > 0 else 0.0,
+            "servicePercent": 0.0,
+        },
+        "quotationConversion": quotation_conversion,
     }
 
 
