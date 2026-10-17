@@ -506,12 +506,14 @@ async def get_analytics_overview(
             db, shop_id=shop_id, period=timeframe, start_date=s_date, end_date=e_date
         )
         rev = float(pl.total_revenue)
-        cogs = float(pl.total_cogs)
-        exp = float(pl.total_expenses)
+        cogs = float(pl.cogs)
+        exp = float(pl.total_operating_expenses)
         gp = float(pl.gross_profit)
-        net = float(pl.net_profit)
+        net = float(pl.net_income)
+        other_income = float(pl.non_operating_income)
     except Exception:
-        rev, cogs, exp, gp, net = 0.0, 0.0, 0.0, 0.0, 0.0
+        logger.exception("Analytics: P&L failed for shop %s", shop_id)
+        rev, cogs, exp, gp, net, other_income = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
     now = utcnow()
 
@@ -752,7 +754,7 @@ async def get_analytics_overview(
         "netOperatingCashFlow": net,
         "totalCostOfGoodsSold": cogs,
         "totalOperatingExpenses": exp,
-        "totalOtherIncome": 0.0,
+        "totalOtherIncome": other_income,
         "netGrossProfit": gp,
         "netOperatingProfit": gp - exp,
         "netIncome": net,

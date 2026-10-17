@@ -75,3 +75,4 @@ jobs:
           tests/test_payroll_rates.py
           tests/test_document_workflow.py
           tests/test_loyalty_points.py
+          tests/test_analytics.py
