@@ -52,6 +52,10 @@ logger = logging.getLogger("mannabooks")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Schema changes are applied by `alembic upgrade head` as a release step, not on every boot.
+    # The guard only adds missing enum values (idempotent) and warns if the database is behind.
+    from app.db.schema_guard import ensure_runtime_schema
+
+    await ensure_runtime_schema()
     # AUTO_INIT_DB=true keeps the old behaviour for throwaway local databases only.
     if settings.AUTO_INIT_DB:
         from scripts.init_db import init_models

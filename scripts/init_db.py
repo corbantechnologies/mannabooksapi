@@ -84,6 +84,9 @@ ENUM_CREATION_STATEMENTS = [
         );
     EXCEPTION WHEN duplicate_object THEN null; END $$;
     """,
+    "ALTER TYPE journal_source ADD VALUE IF NOT EXISTS 'opening_balance'",
+    "ALTER TYPE journal_source ADD VALUE IF NOT EXISTS 'year_end_close'",
+    "ALTER TYPE journal_source ADD VALUE IF NOT EXISTS 'payment'",
     """
     DO $$ BEGIN
         CREATE TYPE user_role AS ENUM (
