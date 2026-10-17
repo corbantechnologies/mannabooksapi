@@ -15,6 +15,8 @@ from app.modules.payments.schemas import (
 from datetime import datetime
 from app.core.datetime_utils import to_naive_utc
 from app.core.datetime_utils import utcnow
+from app.modules.documents import workflow
+from app.modules.documents.workflow import WorkflowError
 
 logger = logging.getLogger("mannabooks.payments")
 
@@ -38,18 +40,15 @@ async def record_payment(
     if not doc:
         raise ValueError("Target document not found in this workspace")
 
+    if doc.type not in workflow.SETTLED_TYPES:
+        raise WorkflowError("Payments are recorded against invoices and debit notes.")
     if doc.status == "CANCELLED":
-        raise ValueError("Cannot record payment against a cancelled document")
+        raise WorkflowError("Cannot record payment against a cancelled document")
+    if doc.status == "DRAFT":
+        raise WorkflowError("Issue the invoice before recording payments against it.")
 
     # Guard against overpayment: customer credit balances are not supported yet.
-    already_paid: Decimal = (
-        await db.execute(
-            select(func.coalesce(func.sum(DocumentPayment.amount), Decimal("0.00"))).where(
-                DocumentPayment.document_id == doc.id
-            )
-        )
-    ).scalar() or Decimal("0.00")
-    outstanding = Decimal(str(doc.grand_total)) - already_paid
+    outstanding = (await workflow.figures(db, doc)).balance
     if outstanding <= 0:
         raise ValueError("This document is already fully paid")
     if req.amount > outstanding:
@@ -72,18 +71,10 @@ async def record_payment(
     from app.modules.accounts.posting import sync_payment_gl
     await sync_payment_gl(db, shop_id, payment, doc)
 
-    # 3. Calculate total historical payments recorded for this document
-    q_sum = select(func.coalesce(func.sum(DocumentPayment.amount), Decimal("0.00"))).where(
-        DocumentPayment.document_id == doc.id
-    )
-    res_sum = await db.execute(q_sum)
-    total_paid: Decimal = res_sum.scalar() or Decimal("0.00")
-
-    # 4. Transition document status
-    if total_paid >= doc.grand_total:
-        doc.status = "PAID"
-    else:
-        doc.status = "PARTIALLY_PAID"
+    # 3. Status follows payments, credit notes and the due date
+    await workflow.refresh_settlement(db, doc)
+    fig = await workflow.figures(db, doc)
+    total_paid = fig.paid
 
     if not doc.payment_channel:
         doc.payment_channel = req.payment_channel
@@ -93,7 +84,7 @@ async def record_payment(
     await db.commit()
     await db.refresh(payment)
 
-    remaining_balance = max(Decimal("0.00"), doc.grand_total - total_paid)
+    remaining_balance = fig.balance
 
     return PaymentReceiptSummary(
         payment=PaymentResponse.model_validate(payment),
@@ -186,17 +177,21 @@ async def handle_mpesa_c2b_callback(
     db.add(payment)
     await db.flush()
 
-    # Check cumulative totals
-    q_sum = select(func.coalesce(func.sum(DocumentPayment.amount), Decimal("0.00"))).where(
-        DocumentPayment.document_id == doc.id
-    )
-    res_sum = await db.execute(q_sum)
-    total_paid: Decimal = res_sum.scalar() or Decimal("0.00")
+    from app.modules.accounts.posting import sync_payment_gl
 
-    if total_paid >= doc.grand_total:
-        doc.status = "PAID"
+    if doc.type in workflow.SETTLED_TYPES:
+        if doc.status == "DRAFT":
+            # Money arrived against a draft: the invoice is effectively issued.
+            doc.status = "ISSUED"
+            await db.flush()
+            await workflow.sync_document_stock(db, doc)
+            from app.modules.documents.service import _sync_gl
+
+            await _sync_gl(db, doc.shop_id, doc)
+        await sync_payment_gl(db, doc.shop_id, payment, doc)
+        await workflow.refresh_settlement(db, doc)
     else:
-        doc.status = "PARTIALLY_PAID"
+        logger.warning("C2B %s matched %s %s, which does not take payments", trans_id, doc.type, doc.doc_number)
 
     doc.payment_channel = "MPESA"
     doc.payment_reference = trans_id
@@ -230,23 +225,12 @@ async def delete_payment(
     new_status = "ISSUED"
     remaining_balance = Decimal("0.00")
     if doc:
-        q_sum = select(func.coalesce(func.sum(DocumentPayment.amount), Decimal("0.00"))).where(
-            DocumentPayment.document_id == doc.id
-        )
-        res_sum = await db.execute(q_sum)
-        total_paid: Decimal = res_sum.scalar() or Decimal("0.00")
-
-        if total_paid >= doc.grand_total:
-            doc.status = "PAID"
-        elif total_paid > Decimal("0.00"):
-            doc.status = "PARTIALLY_PAID"
-        elif doc.due_date and doc.due_date < utcnow():
-            doc.status = "OVERDUE"
-        else:
-            doc.status = "ISSUED"
-
+        if doc.status == "PAID" and doc.type in workflow.SETTLED_TYPES:
+            doc.status = "ISSUED"  # recompute from the remaining payments
+            await db.flush()
+        await workflow.refresh_settlement(db, doc)
         new_status = doc.status
-        remaining_balance = max(Decimal("0.00"), doc.grand_total - total_paid)
+        remaining_balance = (await workflow.figures(db, doc)).balance
 
     await db.commit()
     return {

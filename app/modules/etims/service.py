@@ -1,12 +1,21 @@
 import uuid
 from datetime import datetime
-from typing import Optional, Dict, Any
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Optional, Dict, Any, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+from app.models.document import Document
 from app.models.etims import EtimsConfig, EtimsSequence, EtimsTransmission
+from app.models.item import Product
 from app.modules.etims.crypto import encrypt_cmc_key, decrypt_cmc_key
 from app.modules.etims.client import KraEtimsClient
-from app.modules.etims.schemas import EtimsInitRequest, EtimsSalesTransmissionRequest, EtimsResponseEnvelope
+from app.modules.etims.schemas import (
+    EtimsInitRequest,
+    EtimsItemPayload,
+    EtimsResponseEnvelope,
+    EtimsSalesTransmissionRequest,
+)
 from app.core.clock import now_nairobi
 from app.core.datetime_utils import utcnow
 
@@ -78,6 +87,71 @@ async def register_etims_device(
     }
 
 
+CENT = Decimal("0.01")
+# Same codes the header totals below use (taxAmtA carries the 16% VAT).
+ETIMS_TAX_CODES = {"V_16": "A", "V_0": "B", "EXEMPT": "C"}
+VAT_RATES = {"V_16": Decimal("0.16")}
+
+
+async def sales_items_for_document(db: AsyncSession, doc: Document) -> List[EtimsItemPayload]:
+    """
+    eTIMS lines for a sales document, VAT inclusive as KRA expects (taxblAmt = splyAmt - dcAmt).
+
+    A loyalty redemption or member discount is recorded on the document, not on its lines, so it is
+    spread over the lines by value here: each line gets its dcAmt / dcRt, and its taxable amount and VAT
+    are after the discount. The lines add up exactly to the document's tax_amount and grand_total.
+    """
+    items = list(doc.items or [])
+    gross = [Decimal(str(it.quantity)) * Decimal(str(it.unit_price)) + Decimal(str(it.tax_amount or 0)) for it in items]
+    total_gross = sum(gross, Decimal(0))
+    discount = Decimal(0)
+    if Decimal(str(doc.loyalty_discount_amount or 0)) > 0:
+        discount = max(Decimal(0), total_gross - Decimal(str(doc.grand_total or 0)))
+
+    shares, left = [], discount
+    for i, g in enumerate(gross):
+        share = left if i == len(gross) - 1 else (discount * g / total_gross).quantize(CENT, ROUND_HALF_UP) if total_gross else Decimal(0)
+        share = min(share, g)
+        left -= share
+        shares.append(share)
+    taxes = []
+    for it, share in zip(items, shares):
+        rate = VAT_RATES.get(it.tax_type, Decimal(0))
+        taxes.append(Decimal(str(it.tax_amount or 0)) - (share * rate / (1 + rate)).quantize(CENT, ROUND_HALF_UP))
+    # Rounding: make the lines' VAT match the document's exactly, on the last taxed line.
+    drift = Decimal(str(doc.tax_amount or 0)) - sum(taxes, Decimal(0))
+    taxed = [i for i, it in enumerate(items) if it.tax_type in VAT_RATES]
+    if drift and taxed:
+        taxes[taxed[-1]] += drift
+
+    product_ids = [it.product_id for it in items if it.product_id]
+    skus = {}
+    if product_ids:
+        skus = dict((await db.execute(select(Product.id, Product.sku).where(Product.id.in_(product_ids)))).all())
+
+    out = []
+    for seq, (it, g, share, tax) in enumerate(zip(items, gross, shares, taxes), start=1):
+        qty = Decimal(str(it.quantity))
+        taxable = g - share
+        out.append(
+            EtimsItemPayload(
+                itemSeq=seq,
+                itemCd=(skus.get(it.product_id) or f"MB{seq:05d}")[:20],
+                itemNm=it.description[:200],
+                qty=float(qty),
+                prc=float((g / qty).quantize(CENT, ROUND_HALF_UP)) if qty else 0.0,
+                splyAmt=float(g),
+                dcRt=float((share / g * 100).quantize(CENT, ROUND_HALF_UP)) if g else 0.0,
+                dcAmt=float(share),
+                taxTyCd=ETIMS_TAX_CODES.get(it.tax_type, "A"),
+                taxblAmt=float(taxable),
+                taxAmt=float(tax),
+                totAmt=float(taxable),
+            )
+        )
+    return out
+
+
 async def allocate_next_invoice_number(db: AsyncSession, shop_id: uuid.UUID, branch_id: str = "00") -> int:
     """Row-locked monotonic sequence allocation per shop and branch."""
     q = (
@@ -124,6 +198,18 @@ async def transmit_fiscal_invoice(
             status="SKIPPED",
             error="Workspace has not activated KRA eTIMS integration.",
         )
+
+    if not req.items:
+        doc = (
+            await db.execute(
+                select(Document)
+                .where(Document.id == req.document_id, Document.shop_id == req.shop_id)
+                .options(selectinload(Document.items))
+            )
+        ).scalar_one_or_none()
+        if not doc:
+            return EtimsResponseEnvelope(success=False, status="FAILED", error="Document not found in this workspace.")
+        req.items = await sales_items_for_document(db, doc)
 
     cmc_key = decrypt_cmc_key(config.communication_key_encrypted)
 

@@ -4,7 +4,7 @@ import secrets
 from decimal import Decimal
 from typing import List, Optional, Tuple, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, and_, or_, desc, asc, func
+from sqlalchemy import select, and_, desc, asc
 from sqlalchemy.orm import selectinload
 from app.models.document import Document, DocumentItem, DocumentToken, DocumentNote
 from app.models.payment import DocumentPayment
@@ -20,6 +20,8 @@ from app.modules.documents.schemas import (
 from datetime import datetime, timedelta
 from app.core.datetime_utils import to_naive_utc
 from app.core.datetime_utils import utcnow
+from app.modules.documents import loyalty, workflow
+from app.modules.documents.workflow import WorkflowError
 
 
 
@@ -157,6 +159,9 @@ async def list_documents(
     limit: int = 100,
     offset: int = 0,
 ):
+    overdue, expired = await workflow.sweep_overdue_and_expired(db, shop_id)
+    if overdue or expired:
+        await db.commit()
     q = select(Document).where(Document.shop_id == shop_id).options(
         selectinload(Document.items),
         selectinload(Document.client),
@@ -186,19 +191,23 @@ async def get_document_by_id(db: AsyncSession, shop_id: uuid.UUID, document_id: 
     return res.scalar_one_or_none()
 
 
-async def create_document(db: AsyncSession, shop_id: uuid.UUID, req: DocumentCreateRequest) -> Document:
+async def create_document(
+    db: AsyncSession, shop_id: uuid.UUID, req: DocumentCreateRequest, user_id: Optional[uuid.UUID] = None
+) -> Document:
     canonical_type = normalize_doc_type(req.type)
-    canonical_status = normalize_doc_status(req.status)
+    requested_status = normalize_doc_status(req.status)
+    # An invoice created as paid is issued and settled with a recorded payment, so the ledger,
+    # balance and payment history agree.
+    settle_on_create = canonical_type in workflow.SETTLED_TYPES and requested_status == "PAID"
+    canonical_status = "ISSUED" if settle_on_create else workflow.initial_status(canonical_type, requested_status)
     doc_num = req.doc_number.strip() if req.doc_number else await generate_doc_number(db, shop_id, canonical_type)
 
-    total_sub = Decimal("0.00")
-    total_tax = Decimal("0.00")
     items_to_add: List[DocumentItem] = []
+    lines = []
 
     for item_input in req.items:
         tax, total = compute_item_tax_and_total(item_input.quantity, item_input.unit_price, item_input.tax_type)
-        total_sub += (item_input.quantity * item_input.unit_price)
-        total_tax += tax
+        lines.append((item_input.quantity * item_input.unit_price, tax, item_input.tax_type))
 
         items_to_add.append(
             DocumentItem(
@@ -213,7 +222,10 @@ async def create_document(db: AsyncSession, shop_id: uuid.UUID, req: DocumentCre
             )
         )
 
-    grand_total = total_sub + total_tax
+    priced = await loyalty.price_document(
+        db, shop_id, canonical_type, req.client_id, lines, req.loyalty_points_redeemed, req.apply_tier_discount
+    )
+    grand_total = priced.grand_total
 
     doc = Document(
         shop_id=shop_id,
@@ -226,9 +238,11 @@ async def create_document(db: AsyncSession, shop_id: uuid.UUID, req: DocumentCre
         notes=req.notes,
         terms_and_conditions=req.terms_and_conditions,
         currency=req.currency or "KES",
-        sub_total=total_sub,
-        tax_amount=total_tax,
+        sub_total=priced.sub_total,
+        tax_amount=priced.tax_amount,
         grand_total=grand_total,
+        loyalty_points_redeemed=priced.points_redeemed,
+        loyalty_discount_amount=priced.discount,
         issue_date=to_naive_utc(req.issue_date) or utcnow(),
         due_date=to_naive_utc(req.due_date),
         location_id=req.location_id,
@@ -245,6 +259,25 @@ async def create_document(db: AsyncSession, shop_id: uuid.UUID, req: DocumentCre
 
     # Automatically post double-entry GL journal entry if GL is active
     await _sync_gl(db, shop_id, doc)
+    await workflow.sync_document_stock(db, doc, user_id)
+    await loyalty.sync_document_loyalty(db, doc, user_id)
+    if settle_on_create and grand_total > 0:
+        from app.modules.accounts.posting import sync_payment_gl
+
+        payment = DocumentPayment(
+            document_id=doc.id,
+            shop_id=shop_id,
+            amount=grand_total,
+            payment_date=doc.issue_date,
+            payment_channel=(req.payment_channel or "CASH").upper(),
+            payment_reference=(req.payment_reference or "").strip() or None,
+            notes="Paid in full when the invoice was created",
+            recorded_by_user_id=user_id,
+        )
+        db.add(payment)
+        await db.flush()
+        await sync_payment_gl(db, shop_id, payment, doc)
+    await workflow.refresh_settlement(db, doc)
 
     await db.commit()
     return await get_document_by_id(db, shop_id, doc.id)
@@ -264,8 +297,14 @@ async def issue_credit_note(
 
     if parent.type != "INVOICE":
         raise ValueError(f"Credit note must link to an INVOICE, but parent is {parent.type}")
+    if parent.status not in workflow.OPEN_STATUSES + ("PAID",):
+        raise WorkflowError(
+            f"A credit note needs an issued invoice; {parent.doc_number} is {parent.status.replace('_', ' ').lower()}."
+        )
+    parent_figures = await workflow.figures(db, parent)
 
     cn_number = await generate_doc_number(db, shop_id, "CREDIT_NOTE")
+    credit_doc_id = uuid.uuid4()
 
     items_to_credit = []
     if req.items and len(req.items) > 0:
@@ -318,6 +357,7 @@ async def issue_credit_note(
                         unit_cost=prod.cost_price,
                         running_balance=prod.stock_quantity,
                         notes=f"Restocked via Credit Note {cn_number} (Reason: {req.reason_code})",
+                        source_document_id=credit_doc_id,
                         created_by_id=user_id,
                     )
                 )
@@ -331,11 +371,33 @@ async def issue_credit_note(
                     adjustment_reason="DAMAGED",
                     quantity=qty,
                     notes=f"Damaged scrap returned via Credit Note {cn_number}",
+                    source_document_id=credit_doc_id,
                     created_by_id=user_id,
                 )
             )
 
     grand_total = total_sub + total_tax
+    cn_discount = Decimal("0.00")
+    if not req.items and Decimal(str(parent.loyalty_discount_amount or 0)) > 0:
+        # Full credit of a discounted invoice: credit what was charged, discount included.
+        total_sub, total_tax, grand_total = parent.sub_total, parent.tax_amount, parent.grand_total
+        cn_discount = parent.loyalty_discount_amount
+    if grand_total <= 0:
+        raise WorkflowError("A credit note needs a positive amount.")
+    if grand_total > parent_figures.credit_capacity:
+        raise WorkflowError(
+            f"The credit note ({grand_total:,.2f}) is more than can still be credited on "
+            f"{parent.doc_number} ({parent_figures.credit_capacity:,.2f})."
+        )
+    if parent_figures.balance <= 0:
+        cn_status = "PAID"  # nothing owed: the credit is a refund to the client
+    elif grand_total <= parent_figures.balance:
+        cn_status = "ISSUED"  # reduces what the client owes
+    else:
+        raise WorkflowError(
+            f"{parent.doc_number} still has {parent_figures.balance:,.2f} unpaid. Credit up to that amount now, "
+            "or record the payment first and then credit the rest as a refund."
+        )
 
     # Reason metadata in commercial terms
     reason_desc = {
@@ -345,11 +407,12 @@ async def issue_credit_note(
     }.get(req.reason_code, "Commercial Credit Adjustment")
 
     credit_doc = Document(
+        id=credit_doc_id,
         shop_id=shop_id,
         client_id=parent.client_id,
         type="CREDIT_NOTE",
         doc_number=cn_number,
-        status="ISSUED",
+        status=cn_status,
         parent_document_id=parent.id,
         requires_etims=parent.requires_etims,
         notes=f"KRA Reason [{req.reason_code}] {reason_desc}: {req.reason_notes}",
@@ -358,30 +421,54 @@ async def issue_credit_note(
         sub_total=total_sub,
         tax_amount=total_tax,
         grand_total=grand_total,
+        loyalty_discount_amount=cn_discount,
         issue_date=utcnow(),
         items=cn_items,
     )
 
     db.add(credit_doc)
     await db.flush()
+    db.add(DocumentToken(document_id=credit_doc.id, token=secrets.token_hex(32)))
 
     await _sync_gl(db, shop_id, credit_doc)
+    await workflow.refresh_settlement(db, parent)
 
     await db.commit()
     return await get_document_by_id(db, shop_id, credit_doc.id)
 
 
-async def update_document_status(
-    db: AsyncSession, shop_id: uuid.UUID, document_id: uuid.UUID, new_status: str
+async def perform_document_action(
+    db: AsyncSession,
+    shop_id: uuid.UUID,
+    document_id: uuid.UUID,
+    action: str,
+    user_id: Optional[uuid.UUID] = None,
+    reason: Optional[str] = None,
 ) -> Optional[Document]:
     doc = await get_document_by_id(db, shop_id, document_id)
     if not doc:
         return None
-    doc.status = normalize_doc_status(new_status)
-    await db.flush()
+    await workflow.apply_action(db, doc, action, user_id=user_id, reason=reason)
+    await db.commit()
+    return await get_document_by_id(db, shop_id, document_id)
 
-    await _sync_gl(db, shop_id, doc)
 
+async def update_document_status(
+    db: AsyncSession,
+    shop_id: uuid.UUID,
+    document_id: uuid.UUID,
+    new_status: str,
+    user_id: Optional[uuid.UUID] = None,
+    reason: Optional[str] = None,
+) -> Optional[Document]:
+    """Older endpoint: a target status is mapped to the workflow action that reaches it."""
+    doc = await get_document_by_id(db, shop_id, document_id)
+    if not doc:
+        return None
+    action = workflow.action_for_status(doc, normalize_doc_status(new_status))
+    if not action:
+        return doc
+    await workflow.apply_action(db, doc, action, user_id=user_id, reason=reason or "Status changed")
     await db.commit()
     return await get_document_by_id(db, shop_id, document_id)
 
@@ -392,6 +479,7 @@ async def update_document(
     doc = await get_document_by_id(db, shop_id, document_id)
     if not doc:
         return None
+    workflow.ensure_draft(doc, "edited")
 
     if req.client_id is not None:
         doc.client_id = req.client_id
@@ -399,8 +487,6 @@ async def update_document(
         doc.supplier_id = req.supplier_id
     if req.type:
         doc.type = normalize_doc_type(req.type)
-    if req.status:
-        doc.status = normalize_doc_status(req.status)
     if req.notes is not None:
         doc.notes = req.notes
     if req.terms_and_conditions is not None:
@@ -420,17 +506,11 @@ async def update_document(
     doc.requires_etims = req.requires_etims
 
     if req.items:
-        for old_item in (doc.items or []):
-            await db.delete(old_item)
-        await db.flush()
-
-        total_sub = Decimal("0.00")
-        total_tax = Decimal("0.00")
         new_items = []
+        lines = []
         for it in req.items:
             tax, total = compute_item_tax_and_total(it.quantity, it.unit_price, it.tax_type)
-            total_sub += (it.quantity * it.unit_price)
-            total_tax += tax
+            lines.append((it.quantity * it.unit_price, tax, it.tax_type))
             new_items.append(
                 DocumentItem(
                     document_id=doc.id,
@@ -444,10 +524,18 @@ async def update_document(
                     item_total=total,
                 )
             )
+        priced = await loyalty.price_document(
+            db, shop_id, doc.type, doc.client_id, lines, req.loyalty_points_redeemed, req.apply_tier_discount
+        )
+        for old_item in (doc.items or []):
+            await db.delete(old_item)
+        await db.flush()
         doc.items = new_items
-        doc.sub_total = total_sub
-        doc.tax_amount = total_tax
-        doc.grand_total = total_sub + total_tax
+        doc.sub_total = priced.sub_total
+        doc.tax_amount = priced.tax_amount
+        doc.grand_total = priced.grand_total
+        doc.loyalty_points_redeemed = priced.points_redeemed
+        doc.loyalty_discount_amount = priced.discount
 
     await db.flush()
     await _sync_gl(db, shop_id, doc)
@@ -459,6 +547,7 @@ async def delete_document(db: AsyncSession, shop_id: uuid.UUID, document_id: uui
     doc = await get_document_by_id(db, shop_id, document_id)
     if not doc:
         return False
+    workflow.ensure_draft(doc, "deleted")
     from app.modules.accounts.posting import remove_document_gl
 
     await remove_document_gl(db, shop_id, doc.id)
@@ -468,13 +557,25 @@ async def delete_document(db: AsyncSession, shop_id: uuid.UUID, document_id: uui
 
 
 async def patch_document(
-    db: AsyncSession, shop_id: uuid.UUID, document_id: uuid.UUID, req: DocumentPatchRequest
+    db: AsyncSession,
+    shop_id: uuid.UUID,
+    document_id: uuid.UUID,
+    req: DocumentPatchRequest,
+    user_id: Optional[uuid.UUID] = None,
 ) -> Optional[Document]:
     doc = await get_document_by_id(db, shop_id, document_id)
     if not doc:
         return None
-    if req.status is not None:
-        doc.status = req.status
+    if req.terms_and_conditions is not None and req.terms_and_conditions != doc.terms_and_conditions:
+        workflow.ensure_draft(doc, "edited")
+    if req.due_date is not None and to_naive_utc(req.due_date) != to_naive_utc(doc.due_date):
+        allowed = (
+            doc.status == "DRAFT"
+            or (doc.type in workflow.SETTLED_TYPES and doc.status in workflow.OPEN_STATUSES)
+            or (doc.type == "QUOTATION" and doc.status in ("ISSUED", "EXPIRED"))
+        )
+        if not allowed:
+            raise WorkflowError(f"The due date can't change once the {doc.type.lower()} is {doc.status.lower()}.")
     if req.kra_cu_invoice_number is not None:
         doc.kra_cu_invoice_number = req.kra_cu_invoice_number.strip() or None
     if req.payment_channel is not None:
@@ -492,7 +593,10 @@ async def patch_document(
     if req.terms_and_conditions is not None:
         doc.terms_and_conditions = req.terms_and_conditions
     if req.due_date is not None:
-        doc.due_date = req.due_date
+        doc.due_date = to_naive_utc(req.due_date)
+        if doc.type == "QUOTATION" and doc.status == "EXPIRED" and doc.due_date and doc.due_date > utcnow():
+            doc.status = "ISSUED"  # validity extended
+        await workflow.refresh_settlement(db, doc)
     if req.is_recurring is not None:
         doc.is_recurring = req.is_recurring
     if req.recurring_interval is not None:
@@ -500,6 +604,10 @@ async def patch_document(
     if req.next_recurring_date is not None:
         doc.next_recurring_date = req.next_recurring_date
     await db.flush()
+    if req.status is not None:
+        action = workflow.action_for_status(doc, normalize_doc_status(req.status))
+        if action:
+            await workflow.apply_action(db, doc, action, user_id=user_id, reason="Status changed")
     await _sync_gl(db, shop_id, doc)
     await db.commit()
     return await get_document_by_id(db, shop_id, document_id)
@@ -511,8 +619,23 @@ async def convert_document(
     source_doc = await get_document_by_id(db, shop_id, document_id)
     if not source_doc:
         raise ValueError("Source document not found")
+    target_type = normalize_doc_type(target_type)
+    workflow.check_conversion(source_doc, target_type)
+    if source_doc.type == "QUOTATION" and target_type == "INVOICE":
+        existing = (
+            await db.execute(
+                select(Document.id).where(
+                    Document.parent_document_id == source_doc.id,
+                    Document.type == "INVOICE",
+                    Document.status != "CANCELLED",
+                )
+            )
+        ).first()
+        if existing:
+            raise WorkflowError("This quotation was already converted to an invoice.")
 
     new_doc_number = await generate_doc_number(db, shop_id, target_type)
+    new_status = {"INVOICE": "ISSUED", "RECEIPT": "PAID"}.get(target_type, "DRAFT")
 
     new_doc = Document(
         shop_id=shop_id,
@@ -520,7 +643,7 @@ async def convert_document(
         supplier_id=source_doc.supplier_id,
         type=target_type,
         doc_number=new_doc_number,
-        status="ISSUED" if target_type in ("INVOICE", "RECEIPT") else "DRAFT",
+        status=new_status,
         parent_document_id=source_doc.id,
         requires_etims=source_doc.requires_etims,
         notes=source_doc.notes,
@@ -529,6 +652,7 @@ async def convert_document(
         sub_total=source_doc.sub_total,
         tax_amount=source_doc.tax_amount,
         grand_total=source_doc.grand_total,
+        loyalty_discount_amount=source_doc.loyalty_discount_amount,
         issue_date=utcnow(),
         due_date=source_doc.due_date,
         location_id=source_doc.location_id,
@@ -554,10 +678,11 @@ async def convert_document(
 
     if source_doc.type == "QUOTATION" and target_type == "INVOICE":
         source_doc.status = "CONFIRMED"
-    elif source_doc.type == "INVOICE" and target_type == "RECEIPT":
-        source_doc.status = "PAID"
+        source_doc.client_portal_response = source_doc.client_portal_response or "ACCEPTED"
 
     await _sync_gl(db, shop_id, new_doc)
+    await workflow.sync_document_stock(db, new_doc)
+    await workflow.refresh_settlement(db, new_doc)
     await db.commit()
     return {
         "success": True,
@@ -582,6 +707,13 @@ async def get_document_full_detail(
     doc = await get_document_by_id(db, shop_id, document_id)
     if not doc:
         return None
+    changed = await workflow.refresh_settlement(db, doc)
+    if doc.type == "QUOTATION" and doc.status == "ISSUED" and doc.due_date and to_naive_utc(doc.due_date) < utcnow():
+        doc.status = "EXPIRED"
+        changed = True
+    if changed:
+        await db.commit()
+        doc = await get_document_by_id(db, shop_id, document_id)
 
     # Payments
     q_payments = (
@@ -666,6 +798,7 @@ async def get_document_full_detail(
     ]
 
     portal_token = doc.token_record.token if doc.token_record else None
+    flow = await workflow.available_actions(db, doc)
 
     return {
         "id": str(doc.id),
@@ -694,6 +827,9 @@ async def get_document_full_detail(
         "subTotal": str(doc.sub_total or "0.00"),
         "taxAmount": str(doc.tax_amount or "0.00"),
         "grandTotal": str(doc.grand_total or "0.00"),
+        "loyaltyPointsEarned": doc.loyalty_points_earned or 0,
+        "loyaltyPointsRedeemed": doc.loyalty_points_redeemed or 0,
+        "loyaltyDiscountAmount": str(doc.loyalty_discount_amount or "0.00"),
         "issueDate": doc.issue_date.isoformat() if doc.issue_date else None,
         "dueDate": doc.due_date.isoformat() if doc.due_date else None,
         "isRecurring": doc.is_recurring,
@@ -752,6 +888,9 @@ async def get_document_full_detail(
         "parentDocument": parent_doc,
         "childDocuments": child_docs,
         "paymentMethods": serialized_pms,
+        "workflow": flow,
+        "amountPaid": flow["amountPaid"],
+        "balanceDue": flow["balanceDue"],
     }
 
 
@@ -789,16 +928,29 @@ async def delete_document_note(
 
 
 async def bulk_update_document_status(
-    db: AsyncSession, shop_id: uuid.UUID, document_ids: List[uuid.UUID], new_status: str
-) -> int:
-    q = (
-        update(Document)
-        .where(and_(Document.shop_id == shop_id, Document.id.in_(document_ids)))
-        .values(status=new_status)
-    )
-    res = await db.execute(q)
+    db: AsyncSession,
+    shop_id: uuid.UUID,
+    document_ids: List[uuid.UUID],
+    new_status: str,
+    user_id: Optional[uuid.UUID] = None,
+) -> Dict[str, Any]:
+    """Apply the same status to several documents; ones whose workflow doesn't allow it are skipped."""
+    target = normalize_doc_status(new_status)
+    updated, skipped = 0, []
+    for doc_id in document_ids:
+        doc = await get_document_by_id(db, shop_id, doc_id)
+        if not doc:
+            continue
+        try:
+            async with db.begin_nested():
+                action = workflow.action_for_status(doc, target)
+                if action:
+                    await workflow.apply_action(db, doc, action, user_id=user_id, reason="Bulk status change")
+                    updated += 1
+        except WorkflowError as exc:
+            skipped.append({"id": str(doc.id), "docNumber": doc.doc_number, "reason": str(exc)})
     await db.commit()
-    return res.rowcount
+    return {"updated": updated, "skipped": skipped}
 
 
 async def generate_recurring_cycle(db: AsyncSession, shop_id: uuid.UUID, document_id: uuid.UUID) -> dict:
@@ -813,6 +965,9 @@ async def generate_recurring_cycle(db: AsyncSession, shop_id: uuid.UUID, documen
     new_doc_number = await generate_doc_number(db, shop_id, "INVOICE")
     now = utcnow()
     due = now + timedelta(days=30)
+    list_sub, list_tax, list_total = loyalty.undiscounted(
+        (it.quantity * it.unit_price, it.tax_amount) for it in source_doc.items
+    )
 
     new_doc = Document(
         id=uuid.uuid4(),
@@ -827,9 +982,10 @@ async def generate_recurring_cycle(db: AsyncSession, shop_id: uuid.UUID, documen
         terms_and_conditions=source_doc.terms_and_conditions,
         currency=source_doc.currency,
         exchange_rate=source_doc.exchange_rate,
-        sub_total=source_doc.sub_total,
-        tax_amount=source_doc.tax_amount,
-        grand_total=source_doc.grand_total,
+        # List prices: a loyalty discount on the template was a one-off.
+        sub_total=list_sub,
+        tax_amount=list_tax,
+        grand_total=list_total,
         issue_date=now,
         due_date=due,
         location_id=source_doc.location_id,
@@ -867,6 +1023,7 @@ async def generate_recurring_cycle(db: AsyncSession, shop_id: uuid.UUID, documen
         source_doc.next_recurring_date = curr_next + timedelta(days=365)
 
     await _sync_gl(db, shop_id, new_doc)
+    await workflow.sync_document_stock(db, new_doc)
     await db.commit()
     return {"success": True, "newDocId": str(new_doc.id), "doc_number": new_doc.doc_number}
 

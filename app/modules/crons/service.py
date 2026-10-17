@@ -26,9 +26,11 @@ from app.core.datetime_utils import utcnow
 async def run_overdue_sweep(
     db: AsyncSession, shop_id: Optional[uuid.UUID] = None
 ) -> OverdueSweepResponse:
+    from app.modules.documents.workflow import SETTLED_TYPES, figures, refresh_settlement
+
     now = utcnow()
     conditions = [
-        Document.type == "INVOICE",
+        Document.type.in_(SETTLED_TYPES),
         Document.status.in_(["ISSUED", "PARTIALLY_PAID"]),
         Document.due_date.isnot(None),
         Document.due_date < now,
@@ -63,8 +65,10 @@ async def run_overdue_sweep(
         else:
             aging_buckets["90+_days"] += 1
 
-        doc.status = "OVERDUE"
-        total_amount += doc.grand_total
+        await refresh_settlement(db, doc, now)
+        if doc.status != "OVERDUE":
+            continue
+        total_amount += (await figures(db, doc)).balance
         marked_count += 1
 
     await db.commit()
@@ -132,6 +136,10 @@ async def run_process_recurring(
             )
             db.add(cloned_doc)
             await db.flush()
+            from app.models.document import DocumentToken
+            import secrets
+
+            db.add(DocumentToken(document_id=cloned_doc.id, token=secrets.token_hex(32)))
 
             # 3. Clone line items
             for it in parent.items:
@@ -209,7 +217,7 @@ async def run_quote_expiry_sweep(
     expired_quotes = list(res.scalars().all())
 
     for quote in expired_quotes:
-        quote.status = "CANCELLED"
+        quote.status = "EXPIRED"  # can still be revised or have its validity extended
 
     await db.commit()
 

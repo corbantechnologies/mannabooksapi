@@ -134,7 +134,18 @@ async def add_entries(db: AsyncSession, shop_id: uuid.UUID, entries: Iterable[Op
 # ---------------------------------------------------------------------------
 # Documents (sales side)
 # ---------------------------------------------------------------------------
-POSTED_TYPES = ("INVOICE", "RECEIPT", "CREDIT_NOTE")
+POSTED_TYPES = ("INVOICE", "RECEIPT", "CREDIT_NOTE", "DEBIT_NOTE")
+# Contra revenue: loyalty redemptions and member discounts given at the point of sale.
+LOYALTY_DISCOUNT_ACCOUNT = {"code": "4900", "name": "Loyalty Discounts", "account_type": "REVENUE"}
+
+
+async def _loyalty_discount_account(db: AsyncSession, shop_id: uuid.UUID, acc: dict) -> ChartOfAccount:
+    code = LOYALTY_DISCOUNT_ACCOUNT["code"]
+    if code not in acc:
+        acc[code] = ChartOfAccount(shop_id=shop_id, is_system=True, **LOYALTY_DISCOUNT_ACCOUNT)
+        db.add(acc[code])
+        await db.flush()
+    return acc[code]
 
 
 async def _is_payment_receipt(db: AsyncSession, doc: Document) -> bool:
@@ -152,6 +163,8 @@ async def sync_document_gl(db: AsyncSession, shop_id: uuid.UUID, doc: Document) 
                    with no recorded payments, also Dr Cash / Cr Accounts Receivable.
       RECEIPT      Dr Cash / Cr Sales Revenue (+ Cr Output VAT)  (cash sale; not for receipts of invoices)
       CREDIT_NOTE  Dr Sales Revenue (+ Dr Output VAT) / Cr Accounts Receivable (Cash if refunded/PAID)
+    A loyalty discount (sub_total + tax_amount - grand_total; VAT is already on the discounted value) is
+    Dr Loyalty Discounts / Cr Accounts Receivable or Cash, and the reverse on a credit note.
     Drafts, cancelled and deleted documents have no entries.
     """
     if not await gl_enabled(db, shop_id):
@@ -164,6 +177,8 @@ async def sync_document_gl(db: AsyncSession, shop_id: uuid.UUID, doc: Document) 
         return []
     if doc_type == "RECEIPT" and await _is_payment_receipt(db, doc):
         return []
+    if doc_type == "DEBIT_NOTE" and doc.supplier_id and not doc.client_id:
+        return []  # supplier-side debit notes belong to purchasing
 
     acc = await account_map(db, shop_id)
     cash, ar, vat, revenue = acc["1200"], acc["1300"], acc["2200"], acc["4000"]
@@ -176,20 +191,46 @@ async def sync_document_gl(db: AsyncSession, shop_id: uuid.UUID, doc: Document) 
     def mk(desc, d, c, amt):
         return pair(shop_id, when, f"{desc} {doc.doc_number}", d, c, amt, "document", doc.id, ref)
 
+    discount = ZERO
+    if Decimal(str(doc.loyalty_discount_amount or 0)) > 0:
+        discount = max(ZERO, net + tax - gross)
+    disc = await _loyalty_discount_account(db, shop_id, acc) if discount > 0 else None
+
     entries: list[Optional[JournalEntry]] = []
     if doc_type == "INVOICE":
         entries += [mk("Invoice", ar, revenue, net), mk("Invoice VAT", ar, vat, tax)]
+        if disc:
+            entries.append(mk("Loyalty discount", disc, ar, discount))
         if status == "PAID":
             has_payments = (
                 await db.execute(select(func.count(DocumentPayment.id)).where(DocumentPayment.document_id == doc.id))
             ).scalar()
-            if not has_payments:
-                entries.append(mk("Invoice settled", cash, ar, gross))
+            credited = (
+                await db.execute(
+                    select(func.coalesce(func.sum(Document.grand_total), 0)).where(
+                        Document.parent_document_id == doc.id,
+                        Document.type == "CREDIT_NOTE",
+                        Document.status == "ISSUED",
+                    )
+                )
+            ).scalar() or 0
+            unsettled = gross - Decimal(str(credited))
+            if not has_payments and unsettled > 0:
+                # Older invoices marked paid without payment records.
+                entries.append(mk("Invoice settled", cash, ar, unsettled))
+    elif doc_type == "DEBIT_NOTE":
+        entries += [mk("Debit note", ar, revenue, net), mk("Debit note VAT", ar, vat, tax)]
+        if disc:
+            entries.append(mk("Loyalty discount", disc, ar, discount))
     elif doc_type == "RECEIPT":
         entries += [mk("Cash sale", cash, revenue, net), mk("Cash sale VAT", cash, vat, tax)]
+        if disc:
+            entries.append(mk("Loyalty discount", disc, cash, discount))
     elif doc_type == "CREDIT_NOTE":
         target = cash if status == "PAID" else ar
         entries += [mk("Credit note", revenue, target, net), mk("Credit note VAT", vat, target, tax)]
+        if disc:
+            entries.append(mk("Loyalty discount reversed", target, disc, discount))
 
     return await add_entries(db, shop_id, entries)
 

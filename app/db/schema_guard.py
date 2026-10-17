@@ -21,6 +21,8 @@ logger = logging.getLogger("mannabooks.schema")
 REQUIRED_ENUM_VALUES = {
     "journal_source": ("document", "expense", "income", "payroll", "manual", "migrated",
                        "opening_balance", "year_end_close", "payment"),
+    "doc_status": ("DRAFT", "ISSUED", "OVERDUE", "PAID", "PARTIALLY_PAID", "RECEIVED", "CANCELLED",
+                   "CONFIRMED", "EXPIRED"),
 }
 
 

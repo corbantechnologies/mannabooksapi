@@ -30,6 +30,10 @@ class DocumentCreateRequest(ApiModel):
     payment_channel: Optional[str] = None
     payment_reference: Optional[str] = None
     requires_etims: bool = False
+    # Loyalty: points to redeem as a discount, and whether to apply the client's member tier discount.
+    # The server works out the discount and validates the client's balance.
+    loyalty_points_redeemed: int = Field(0, ge=0)
+    apply_tier_discount: bool = False
     items: List[DocumentItemInput] = Field(..., min_length=1)
 
     @field_validator("type", mode="before")
@@ -106,6 +110,7 @@ class CreditNoteCreateRequest(ApiModel):
 
 class DocumentStatusUpdateRequest(ApiModel):
     status: str
+    reason: Optional[str] = Field(None, max_length=500)
 
     @field_validator("status", mode="before")
     @classmethod
@@ -140,6 +145,10 @@ class DocumentPatchRequest(ApiModel):
 
 class DocumentNoteCreateRequest(ApiModel):
     note: str = Field(..., min_length=1)
+
+
+class DocumentActionRequest(ApiModel):
+    reason: Optional[str] = Field(None, max_length=500)
 
 
 class DocumentConvertRequest(ApiModel):
@@ -205,6 +214,9 @@ class DocumentResponse(ApiModel):
     sub_total: Decimal
     tax_amount: Decimal
     grand_total: Decimal
+    loyalty_points_earned: Optional[int] = 0
+    loyalty_points_redeemed: Optional[int] = 0
+    loyalty_discount_amount: Optional[Decimal] = Decimal("0.00")
     issue_date: datetime
     due_date: Optional[datetime] = None
     location_id: Optional[uuid.UUID] = None

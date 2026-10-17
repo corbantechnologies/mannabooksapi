@@ -110,10 +110,11 @@ class CreateProductionOrderRequest(ApiModel):
 class LoyaltyProgramUpdateRequest(ApiModel):
     shop_id: str
     name: str = "Customer Rewards"
-    points_per_kes: Decimal = Decimal("0.01")
+    points_per_kes: Optional[Decimal] = Decimal("0.01")
+    earn_rate_kes: Optional[Decimal] = None  # KES spent per point; preferred over points_per_kes
     kes_per_point: Decimal = Decimal("1.00")
     min_redeem_points: int = 100
-    points_expiry_days: int = 365
+    points_expiry_days: Optional[int] = 365  # empty / 0: points never expire
     is_active: bool = True
 
 
@@ -753,30 +754,42 @@ async def update_loyalty_program(
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    q = select(LoyaltyProgram).where(LoyaltyProgram.shop_id == req.shop_id)
+    shop_uuid = uuid.UUID(str(req.shop_id))
+    q = select(LoyaltyProgram).where(LoyaltyProgram.shop_id == shop_uuid)
     res = await db.execute(q)
     prog = res.scalar_one_or_none()
 
+    # The screen sends points earned per KES (e.g. 0.01); the program stores KES spent per point (e.g. 100).
+    if req.earn_rate_kes is not None and req.earn_rate_kes > 0:
+        earn_rate = req.earn_rate_kes
+    elif req.points_per_kes and req.points_per_kes > 0:
+        earn_rate = (Decimal("1") / req.points_per_kes).quantize(Decimal("0.01"))
+    else:
+        earn_rate = Decimal("100.00")
+
     if not prog:
         prog = LoyaltyProgram(
-            shop_id=uuid.UUID(req.shop_id),
+            shop_id=shop_uuid,
             program_name=req.name,
-            earn_rate_kes=req.points_per_kes,
+            earn_rate_kes=earn_rate,
             point_value_kes=req.kes_per_point,
             min_redeem_points=req.min_redeem_points,
-            points_expiry_days=req.points_expiry_days,
+            points_expiry_days=req.points_expiry_days or 0,
             is_enabled=req.is_active,
             engine_mode="POINTS_ONLY" if req.is_active else "OFF",
         )
         db.add(prog)
     else:
         prog.program_name = req.name
-        prog.earn_rate_kes = req.points_per_kes
+        prog.earn_rate_kes = earn_rate
         prog.point_value_kes = req.kes_per_point
         prog.min_redeem_points = req.min_redeem_points
-        prog.points_expiry_days = req.points_expiry_days
+        prog.points_expiry_days = req.points_expiry_days or 0
         prog.is_enabled = req.is_active
-        prog.engine_mode = "POINTS_ONLY" if req.is_active else "OFF"
+        if not req.is_active:
+            prog.engine_mode = "OFF"
+        elif prog.engine_mode == "OFF":
+            prog.engine_mode = "POINTS_ONLY"  # keep a mode chosen in settings (tiers / hybrid)
 
     await db.commit()
     return {"success": True, "program": prog}
@@ -843,8 +856,8 @@ async def adjust_loyalty_points(
 
     # Get or create client loyalty account
     q_acc = select(ClientLoyaltyAccount).where(
-        ClientLoyaltyAccount.shop_id == req.shop_id,
-        ClientLoyaltyAccount.client_id == req.client_id
+        ClientLoyaltyAccount.shop_id == uuid.UUID(str(req.shop_id)),
+        ClientLoyaltyAccount.client_id == uuid.UUID(str(req.client_id)),
     )
     res_acc = await db.execute(q_acc)
     acc = res_acc.scalar_one_or_none()
@@ -895,6 +908,20 @@ async def adjust_loyalty_points(
     }
 
 
+async def _tier_summary(db: AsyncSession, acc: ClientLoyaltyAccount) -> Optional[dict]:
+    """The member's tier as the sales screens use it (discount and points multiplier)."""
+    tier = await db.get(MembershipTier, acc.tier_id) if acc.tier_id else None
+    if not tier:
+        return None
+    return {
+        "id": str(tier.id),
+        "name": tier.name,
+        "discountPercent": str(tier.discount_percent),
+        "pointsMultiplier": str(tier.points_multiplier),
+        "badgeColor": tier.badge_color,
+    }
+
+
 class PhoneLoyaltyRequest(ApiModel):
     shop_id: str
     phone: str
@@ -933,6 +960,7 @@ async def get_client_loyalty_account_endpoint(
             "memberNumber": acc.member_number,
             "currentPoints": acc.current_points,
             "walletBalanceKes": str(acc.wallet_balance_kes or "0.00"),
+            "tier": await _tier_summary(db, acc),
         }
     }
 
@@ -1001,6 +1029,7 @@ async def find_or_create_loyalty_account_by_phone_endpoint(
                 "memberNumber": acc.member_number,
                 "currentPoints": acc.current_points,
                 "walletBalanceKes": str(acc.wallet_balance_kes or "0.00"),
+                "tier": await _tier_summary(db, acc),
             }
         }
     }

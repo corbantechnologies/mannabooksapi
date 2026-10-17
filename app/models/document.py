@@ -43,7 +43,7 @@ class Document(Base):
         "status",
         SQLEnum(
             "DRAFT", "ISSUED", "OVERDUE", "PAID", "PARTIALLY_PAID",
-            "RECEIVED", "CANCELLED", "CONFIRMED",
+            "RECEIVED", "CANCELLED", "CONFIRMED", "EXPIRED",
             name="doc_status",
             create_type=False,
         ),

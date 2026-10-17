@@ -38,7 +38,8 @@ class EtimsSalesTransmissionRequest(ApiModel):
     sales_type_code: str = "N"  # N (Normal), C (Credit Note)
     receipt_type_code: str = "S"  # S (Sale), R (Refund)
     payment_type_code: str = "01"  # 01 Cash, 02 Credit, 03 M-Pesa, 04 Bank
-    items: List[EtimsItemPayload]
+    # Leave empty to build the lines from the document (with any loyalty discount spread per line).
+    items: List[EtimsItemPayload] = []
 
 
 class EtimsResponseEnvelope(ApiModel):

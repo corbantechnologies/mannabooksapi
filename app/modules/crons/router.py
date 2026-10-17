@@ -83,6 +83,24 @@ async def etims_retry_endpoint(
         )
 
 
+@router.post("/loyalty-maintenance")
+async def loyalty_maintenance_endpoint(
+    shop_id: Optional[uuid.UUID] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Nightly: lapse loyalty points past the programme's expiry and move clients to the tier their spend reaches."""
+    from app.modules.documents.loyalty import expire_points
+
+    try:
+        return await expire_points(db, shop_id=shop_id)
+    except Exception:
+        logger.exception("Failed to run loyalty maintenance")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to run loyalty maintenance. Please try again or contact support.",
+        )
+
+
 @router.post("/subscription-lifecycle")
 async def subscription_lifecycle_endpoint(
     db: AsyncSession = Depends(get_db),

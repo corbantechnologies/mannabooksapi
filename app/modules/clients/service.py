@@ -131,13 +131,20 @@ async def get_client_statement(
                                               "description": d.notes or f"{d.type.replace('_', ' ').title()} {label}",
                                               "debit": amt, "credit": _D("0"), "status": d.status}))
             if d.type == "INVOICE" and d.status == "PAID" and d.id not in any_payment:
-                events.append((d.issue_date, 1, {"docId": str(d.id), "docType": "PAYMENT", "reference": label,
-                                                  "description": f"Settled at issue: {label}",
-                                                  "debit": _D("0"), "credit": amt, "status": "PAID"}))
+                credited = sum((_D(str(c.grand_total or 0)) for c in docs
+                                if c.type == "CREDIT_NOTE" and c.parent_document_id == d.id and c.status == "ISSUED"), _D("0"))
+                if amt - credited > 0:  # older invoices marked paid without a payment record
+                    events.append((d.issue_date, 1, {"docId": str(d.id), "docType": "PAYMENT", "reference": label,
+                                                      "description": f"Settled at issue: {label}",
+                                                      "debit": _D("0"), "credit": amt - credited, "status": "PAID"}))
         else:  # CREDIT_NOTE
             events.append((d.issue_date, 0, {"docId": str(d.id), "docType": d.type, "reference": label,
                                               "description": d.notes or f"Credit note {label}",
                                               "debit": _D("0"), "credit": amt, "status": d.status}))
+            if d.status == "PAID":  # refunded in cash: the credit was paid out, so nothing is left on account
+                events.append((d.issue_date, 1, {"docId": str(d.id), "docType": "REFUND", "reference": label,
+                                                  "description": f"Refund paid for {label}",
+                                                  "debit": amt, "credit": _D("0"), "status": "PAID"}))
     by_id = {d.id: d for d in docs}
     for p in payments:
         doc = by_id.get(p.document_id)

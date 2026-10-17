@@ -24,6 +24,7 @@ from app.modules.accounts.router import router as accounts_router
 from app.modules.accounts.ledger_router import router as ledger_router
 from app.modules.accounts.posting import PeriodLockedError
 from app.modules.documents.router import router as documents_router
+from app.modules.documents.workflow import WorkflowError
 from app.modules.payments.router import router as payments_router
 from app.modules.reports.router import router as reports_router, analytics_router
 from app.modules.crons.router import router as crons_router
@@ -78,6 +79,11 @@ app = FastAPI(
 
 @app.exception_handler(PeriodLockedError)
 async def period_locked_handler(request: Request, exc: PeriodLockedError):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(WorkflowError)
+async def workflow_error_handler(request: Request, exc: WorkflowError):
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 

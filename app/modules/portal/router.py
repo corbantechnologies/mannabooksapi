@@ -177,6 +177,11 @@ async def portal_accept_quotation(
             "docNumber": invoice_info.get("doc_number"),
         }
 
+    if doc.status == "EXPIRED":
+        raise HTTPException(status_code=409, detail="This quotation has expired. Ask the business for an updated quote.")
+    if doc.status not in ("DRAFT", "ISSUED"):
+        raise HTTPException(status_code=409, detail="This quotation is no longer open for acceptance.")
+
     doc.client_portal_response = "ACCEPTED"
     doc.status = "CONFIRMED"
 

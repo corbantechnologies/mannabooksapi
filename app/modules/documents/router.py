@@ -17,6 +17,7 @@ from app.modules.documents.schemas import (
     DocumentNoteCreateRequest,
     DocumentConvertRequest,
     DocumentBulkStatusRequest,
+    DocumentActionRequest,
 )
 from app.modules.documents.service import (
     list_documents,
@@ -24,6 +25,7 @@ from app.modules.documents.service import (
     create_document,
     issue_credit_note,
     update_document_status,
+    perform_document_action,
     update_document,
     delete_document,
     patch_document,
@@ -38,6 +40,12 @@ from datetime import datetime, date, timezone, timedelta
 from app.core.datetime_utils import utcnow
 
 router = APIRouter(prefix="/documents", tags=["Documents & Credit Notes"], dependencies=[Depends(verify_internal_api_key)])
+
+
+def _user_id(request: Request) -> Optional[uuid.UUID]:
+    from app.api.deps import get_acting_user_id
+
+    return get_acting_user_id(request)
 
 
 @router.get("", response_model=List[DocumentResponse])
@@ -85,21 +93,23 @@ async def get_document_endpoint(
 @router.post("", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def create_document_endpoint(
     req: DocumentCreateRequest,
+    request: Request,
     shop_id: uuid.UUID = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
-    return await create_document(db, shop_id=shop_id, req=req)
+    return await create_document(db, shop_id=shop_id, req=req, user_id=_user_id(request))
 
 
 @router.post("/{document_id}/credit-note", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def issue_credit_note_endpoint(
     document_id: uuid.UUID,
     req: CreditNoteCreateRequest,
+    request: Request,
     shop_id: uuid.UUID = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        return await issue_credit_note(db, shop_id=shop_id, parent_doc_id=document_id, req=req)
+        return await issue_credit_note(db, shop_id=shop_id, parent_doc_id=document_id, req=req, user_id=_user_id(request))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
@@ -108,23 +118,47 @@ async def issue_credit_note_endpoint(
 async def update_status_endpoint(
     document_id: uuid.UUID,
     req: DocumentStatusUpdateRequest,
+    request: Request,
     shop_id: uuid.UUID = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
-    doc = await update_document_status(db, shop_id=shop_id, document_id=document_id, new_status=req.status)
+    doc = await update_document_status(
+        db, shop_id=shop_id, document_id=document_id, new_status=req.status,
+        user_id=_user_id(request), reason=req.reason,
+    )
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     return doc
+
+
+@router.post("/{document_id}/actions/{action}")
+async def document_action_endpoint(
+    document_id: uuid.UUID,
+    action: str,
+    request: Request,
+    req: Optional[DocumentActionRequest] = None,
+    shop_id: uuid.UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run one workflow action (issue, void, accept, decline, revise, cancel, confirm, receive, approve, pay)."""
+    doc = await perform_document_action(
+        db, shop_id=shop_id, document_id=document_id, action=action.lower(),
+        user_id=_user_id(request), reason=req.reason if req else None,
+    )
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return await get_document_full_detail(db, shop_id=shop_id, document_id=document_id)
 
 
 @router.patch("/{document_id}", response_model=DocumentResponse)
 async def patch_document_endpoint(
     document_id: uuid.UUID,
     req: DocumentPatchRequest,
+    request: Request,
     shop_id: uuid.UUID = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
-    doc = await patch_document(db, shop_id=shop_id, document_id=document_id, req=req)
+    doc = await patch_document(db, shop_id=shop_id, document_id=document_id, req=req, user_id=_user_id(request))
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     return doc
@@ -176,13 +210,14 @@ async def delete_document_note_endpoint(
 @router.post("/bulk/status")
 async def bulk_update_status_endpoint(
     req: DocumentBulkStatusRequest,
+    request: Request,
     shop_id: uuid.UUID = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
-    updated = await bulk_update_document_status(
-        db, shop_id=shop_id, document_ids=req.document_ids, new_status=req.new_status
+    result = await bulk_update_document_status(
+        db, shop_id=shop_id, document_ids=req.document_ids, new_status=req.new_status, user_id=_user_id(request)
     )
-    return {"success": True, "updatedCount": updated}
+    return {"success": True, "updatedCount": result["updated"], "skipped": result["skipped"]}
 
 
 @router.put("/{document_id}", response_model=DocumentResponse)
@@ -446,18 +481,23 @@ async def duplicate_document_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     from sqlalchemy.orm import selectinload
-    from app.models.document import Document, DocumentItem
+    from app.models.document import Document, DocumentItem, DocumentToken
     stmt = (
         select(Document)
         .options(selectinload(Document.items))
-        .where(Document.id == document_id)
+        .where(Document.id == document_id, *([Document.shop_id == shop_id] if shop_id else []))
     )
     res = await db.execute(stmt)
     source = res.scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    new_doc_num = f"{source.doc_number}-COPY-{secrets.token_hex(2).upper()}"
+    from app.modules.documents.service import generate_doc_number
+
+    new_doc_num = await generate_doc_number(db, source.shop_id, source.type)
+    from app.modules.documents.loyalty import undiscounted
+
+    _, list_tax, list_total = undiscounted((it.quantity * it.unit_price, it.tax_amount) for it in source.items)
     new_doc = Document(
         shop_id=source.shop_id,
         client_id=source.client_id,
@@ -472,13 +512,15 @@ async def duplicate_document_endpoint(
         exchange_rate=source.exchange_rate,
         base_currency=source.base_currency,
         base_grand_total=source.base_grand_total,
+        # A copy starts at list prices; a loyalty discount belongs to the original sale.
         sub_total=source.sub_total,
-        tax_amount=source.tax_amount,
-        grand_total=source.grand_total,
+        tax_amount=list_tax,
+        grand_total=list_total,
         issue_date=utcnow(),
     )
     db.add(new_doc)
     await db.flush()
+    db.add(DocumentToken(document_id=new_doc.id, token=secrets.token_hex(32)))
 
     for item in source.items:
         new_item = DocumentItem(
