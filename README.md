@@ -51,8 +51,15 @@ is kept for throwaway local databases via `AUTO_INIT_DB=true`).
 ```bash
 python -m alembic revision -m "describe the change"
 ```
-Write idempotent SQL where possible, then `python -m alembic upgrade head`. Railway runs
-`python -m alembic upgrade head` as a pre-deploy step (`railway.json`).
+Write idempotent SQL where possible (`ADD COLUMN IF NOT EXISTS`, NOT NULL columns with a default), then
+`python -m alembic upgrade head`. Check a database against the models with:
+
+```bash
+python scripts/check_schema.py
+```
+
+It exits 1 if any model table, column or enum value is missing, or the Alembic revision is behind.
+Migrations take a Postgres advisory lock, so several instances starting at once apply them one at a time.
 
 ## How requests are authorised
 - `app/api/deps.py`: identifies the caller. A user comes from a JWT (`Authorization: Bearer` from the Next.js
@@ -80,8 +87,12 @@ tests/
 ```
 
 ## Deployment (Railway)
-`railway.json`: Nixpacks build (Python version from `.python-version`), pre-deploy migrations, uvicorn with
-`--proxy-headers` and `WEB_CONCURRENCY` workers (default 2). Liveness `/health`, readiness `/health/ready` (DB check).
+`railway.json`: Nixpacks build (Python version from `.python-version`); the start command is
+`sh scripts/start.sh`, which runs `python -m alembic upgrade head` and then uvicorn with `--proxy-headers` and
+`WEB_CONCURRENCY` workers (default 2). A failed migration stops the deploy and the previous version keeps serving.
+Health: `/health` (Railway's check) returns 503 unless the database is reachable and at the latest migration;
+`/health/live` is a process-only check. CI (`.github/workflows/ci.yml`) migrates an empty Postgres, runs
+`scripts/check_schema.py`, re-runs the latest migration, and runs the core tests.
 A `Dockerfile` is included if you prefer image builds. Required environment variables are in `.env.example` and
 `../ENVIRONMENT_VARIABLES.md`.
 

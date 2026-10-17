@@ -18,5 +18,5 @@ RUN useradd --create-home --uid 10001 appuser
 USER appuser
 
 EXPOSE 8000
-# Run migrations as a separate release step: `python -m alembic upgrade head`
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips=* --workers ${WEB_CONCURRENCY:-2}"]
+# Applies migrations (under an advisory lock) and then starts uvicorn.
+CMD ["sh", "scripts/start.sh"]

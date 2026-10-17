@@ -2,7 +2,7 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.core.config import get_settings
@@ -29,10 +29,23 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+# Any constant works; it only has to be the same for every process running migrations.
+MIGRATION_LOCK_KEY = 72_310_451
+
+
 def do_run_migrations(connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
-    with context.begin_transaction():
-        context.run_migrations()
+    # Serialise migrations across replicas/containers starting at the same time. The lock is
+    # session-level, so it survives Alembic's own transactions; commit right away so Alembic
+    # starts its migration transaction on a clean connection.
+    connection.execute(text("SELECT pg_advisory_lock(:k)"), {"k": MIGRATION_LOCK_KEY})
+    connection.commit()
+    try:
+        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+        with context.begin_transaction():
+            context.run_migrations()
+    finally:
+        connection.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": MIGRATION_LOCK_KEY})
+        connection.commit()
 
 
 async def run_async_migrations() -> None:

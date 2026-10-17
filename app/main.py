@@ -14,8 +14,6 @@ from app.api.tenancy import workspace_guard
 from app.core.config import get_settings
 from app.core.logging import configure_logging, request_id_var
 from app.core.responses import CompatJSONResponse
-from app.db.session import engine
-from sqlalchemy import text
 from app.modules.etims.router import router as etims_router
 from app.modules.auth.router import router as auth_router
 from app.modules.workspaces.router import router as workspaces_router
@@ -236,17 +234,26 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Liveness: the process is up (used by Railway's healthcheck)."""
+    """
+    Deploy health check (Railway `healthcheckPath`). Fails (503) when the database is unreachable or
+    its schema is behind the migrations shipped with this code, so a bad deploy never goes live.
+    """
+    from app.db.schema_guard import schema_status
+
+    status = await schema_status()
+    body = {"service": "mannabooksapi", **status}
+    if status["database"] != "up" or not status["upToDate"]:
+        return JSONResponse(status_code=503, content={"status": "unhealthy", **body})
+    return {"status": "ok", **body}
+
+
+@app.get("/health/live")
+async def liveness_check():
+    """Process is running (no database access)."""
     return {"status": "ok", "service": "mannabooksapi"}
 
 
 @app.get("/health/ready")
 async def readiness_check():
-    """Readiness: the database is reachable."""
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        logger.exception("Readiness check failed")
-        return JSONResponse(status_code=503, content={"status": "unavailable", "database": "down"})
-    return {"status": "ok", "database": "up"}
+    """Alias of /health for load balancers that expect a readiness path."""
+    return await health_check()
